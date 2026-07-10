@@ -1,0 +1,15 @@
+# 避免把大目录打进 docker build 上下文
+.env
+.env.local
+.venv/
+__pycache__/
+*.pyc
+.cache/
+models/
+.git/
+.workbuddy/
+tests/
+*.log
+.proxy_access.log
+.idea/
+.vscode/

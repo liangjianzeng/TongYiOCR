@@ -1,0 +1,6 @@
+# GLM-OCR 引擎客户端依赖（可选）
+#
+# 仅当启用 GLM-OCR（config.GLM_OCR_ENABLED=1，且本机跑 llama.cpp VLM :8089）时需要。
+# 未安装时代理的 /glmocr/* 路由会返回「glmocr SDK 未安装」错误，不影响其它引擎。
+# 注意：glmocr[layout] 会拉取 torch 等较大依赖。
+glmocr[layout]

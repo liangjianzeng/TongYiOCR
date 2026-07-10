@@ -1,0 +1,45 @@
+# 彤熠OCR网关（TongYiOCR）—— 后端 Docker 引擎编排
+#
+# 本 compose 只负责两个需 Docker 的 OCR 引擎：
+#   - unlimited-ocr   → 映射主机 8090（容器内部 8000）
+#   - paddleocr-vl    → 映射主机 8091（容器内部 8000）
+#
+# FastAPI 代理本身（:8088）与 GLM-OCR 的 llama.cpp（:8089）不在此 compose 内，
+# 由宿主机直接运行：
+#   uvicorn app.main:app --host 0.0.0.0 --port 8088
+#   llama-server ... --host 127.0.0.1 --port 8089
+#
+# 启动容器：  docker compose up -d
+# 停止容器：  docker compose down
+
+services:
+  unlimited-ocr:
+    image: unlimited-ocr:latest
+    container_name: unlimited-ocr
+    ports:
+      - "8090:8000"
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]
+
+  paddleocr-vl:
+    image: paddleocr-vl:latest
+    container_name: paddleocr-vl
+    ports:
+      # 引擎服务 engine_server.py 监听容器内 8000（与 genai_server 的 8118 分开）
+      - "8091:8000"
+    volumes:
+      - ./models:/app/models
+    restart: unless-stopped
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              capabilities: [gpu]

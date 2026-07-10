@@ -1,0 +1,14 @@
+# PaddleOCR-VL 引擎依赖（参考 / 非 Docker 部署用）
+#
+# 本仓库通过 docker-compose.gpu.yml 构建的镜像已内置 paddleocr / paddlex / torch(cu128) / vllm，
+# 容器启动脚本（docker/entrypoint.sh）仅需额外补 paddlepaddle(CPU) + 少量依赖。
+# 下列清单用于在裸机 / 非 Docker 环境直接运行 engine_server.py 时安装。
+#
+# GPU 环境请用 paddlepaddle-gpu 对应 wheel；CPU 布局检测可用 paddlepaddle==3.3.1。
+paddleocr[doc-parser]
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+Pillow>=10.0
+numpy>=1.24
+pymupdf>=1.24

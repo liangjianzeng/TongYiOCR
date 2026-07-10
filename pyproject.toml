@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tongyi-ocr-gateway"
+version = "1.0.0"
+description = "彤熠OCR网关 (TongYiOCR): 统一多引擎 OCR 代理，聚合 GLM-OCR / Unlimited-OCR / PaddleOCR-VL，输出一致化的 Markdown + 结构化元素 + 裁剪图。"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "jianzengliang" }]
+keywords = ["ocr", "document-parsing", "paddleocr", "glm-ocr", "markdown", "fastapi", "layout-analysis"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+]
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.27",
+    "python-multipart>=0.0.9",
+    "python-dotenv>=1.0",
+    "Pillow>=10.0",
+    "numpy>=1.24",
+    "pymupdf>=1.24",
+]
+
+[project.optional-dependencies]
+# 启用 GLM-OCR 引擎所需（会引入 torch 等较大依赖）
+glmocr = ["glmocr[layout]"]
+# 开发 / 测试
+dev = ["pytest>=8.0", "ruff>=0.4"]
+
+[project.urls]
+Homepage = "https://github.com/jianzengliang/TongYiOCR"
+Repository = "https://github.com/jianzengliang/TongYiOCR"
+Issues = "https://github.com/jianzengliang/TongYiOCR/issues"
+
+[tool.setuptools]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

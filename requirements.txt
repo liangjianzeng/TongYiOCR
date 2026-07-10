@@ -1,0 +1,19 @@
+# 彤熠OCR网关 (TongYiOCR) —— 统一代理（FastAPI :8088）依赖
+#
+# 安装：  pip install -r requirements.txt
+# 启用 GLM-OCR 引擎还需：  pip install -r requirements.glmocr.txt
+# PaddleOCR-VL / Unlimited-OCR 引擎运行在 Docker 容器内，依赖见 requirements.engine.txt
+#
+# 说明：代理本身只做转发，不加载大模型权重；GLM-OCR 的 glmocr SDK 列为可选依赖，
+#       未安装时对应路由会返回明确错误，不影响其它引擎。
+
+# ---- Web 服务 ----
+fastapi>=0.110
+uvicorn[standard]>=0.27
+python-multipart>=0.0.9
+python-dotenv>=1.0
+
+# ---- 图像处理 / PDF 栅格化 ----
+Pillow>=10.0
+numpy>=1.24
+pymupdf>=1.24        # fitz，PDF 转图片（K12 课件 / 习题）

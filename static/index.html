@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>彤熠OCR网关 (TongYiOCR) · 测试台</title>
+<style>
+  *{box-sizing:border-box;} body{margin:0;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;background:#0f1320;color:#e8e8e8;}
+  header{background:#1b2030;padding:12px 18px;font-weight:600;border-bottom:1px solid #2a3148;}
+  .wrap{padding:18px;max-width:1180px;margin:0 auto;}
+  .row{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:10px 0;}
+  button{background:#3a7afe;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer;}
+  button.sec{background:#222a40;color:#cdd;}
+  button:disabled{opacity:.5;cursor:not-allowed;}
+  select,input[type=text]{background:#161c2b;color:#e8e8e8;border:1px solid #2a3148;border-radius:6px;padding:7px 9px;}
+  label{font-size:13px;color:#9fb0d0;}
+  pre{background:#11151f;border:1px solid #232a3c;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:340px;}
+  .hint{color:#7e8aa8;font-size:12px;margin:6px 0;}
+  .engines{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
+  .eng{background:#161c2b;border:1px solid #2a3148;border-radius:8px;padding:10px 12px;min-width:220px;}
+  .eng h4{margin:0 0 6px;font-size:14px;}
+  .dot{display:inline-block;width:8px;height:8px;border-radius:50%;background:#555;margin-right:6px;vertical-align:middle;}
+  .dot.on{background:#3ad07a;} .dot.off{background:#d05a3a;}
+  .card{background:#161c2b;border:1px solid #2a3148;border-radius:8px;padding:14px;margin:14px 0;}
+  .card h3{margin:0 0 10px;font-size:15px;}
+  .pages{display:flex;flex-direction:column;gap:12px;margin-top:10px;}
+  .page{border:1px solid #232a3c;border-radius:8px;padding:10px;background:#11151f;}
+  .page .pmeta{font-size:12px;color:#9fb0d0;margin-bottom:6px;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;margin:6px 0;}
+  .chip{background:#222a40;border-radius:12px;padding:2px 9px;font-size:11px;color:#bcd;}
+  .crops{display:flex;gap:8px;flex-wrap:wrap;margin-top:6px;}
+  .crop img{height:64px;border:1px solid #2a3148;border-radius:4px;background:#fff;}
+  .md-out{background:#fafafa;color:#111;border-radius:8px;padding:10px;margin-top:6px;font-size:13px;overflow:auto;max-height:220px;}
+  .taskbar{font-size:13px;color:#bcd;margin-top:8px;}
+  .progress{height:8px;background:#222a40;border-radius:4px;overflow:hidden;margin-top:6px;}
+  .progress>div{height:100%;background:#3a7afe;width:0;}
+</style>
+</head>
+<body>
+<header>彤熠OCR网关 (TongYiOCR) · 测试台（本机 :8088）</header>
+<div class="wrap">
+
+  <div class="engines" id="engines">
+    <div class="eng"><h4><span class="dot" id="d-glmocr"></span>GLM-OCR</h4><div class="hint" id="h-glmocr">…</div><button class="sec" onclick="checkHealth('glmocr')">检查</button></div>
+    <div class="eng"><h4><span class="dot" id="d-unlimited"></span>Unlimited-OCR</h4><div class="hint" id="h-unlimited">…</div><button class="sec" onclick="checkHealth('unlimited-ocr')">检查</button></div>
+    <div class="eng"><h4><span class="dot" id="d-paddle"></span>PaddleOCR-VL</h4><div class="hint" id="h-paddle">…</div><button class="sec" onclick="checkHealth('paddleocr-vl')">检查</button></div>
+  </div>
+
+  <div class="card">
+    <h3>解析（选图 → 选择引擎 → 同步 / 任务队列）</h3>
+    <div class="row">
+      <input type="file" id="imgFile" accept="image/*"/>
+      <label>引擎
+        <select id="engine">
+          <option value="glmocr">GLM-OCR</option>
+          <option value="unlimited-ocr">Unlimited-OCR</option>
+          <option value="paddleocr-vl">PaddleOCR-VL</option>
+        </select>
+      </label>
+      <label>doc_id <input type="text" id="docId" value="web" size="8"/></label>
+      <button id="btnSync" onclick="doParse()">同步解析</button>
+      <button class="sec" id="btnTask" onclick="doTask()">提交任务</button>
+    </div>
+    <div class="hint">同步解析直接返回结果；提交任务走 /task/* 队列，可并发排队、轮询进度。</div>
+    <div class="taskbar" id="taskbar"></div>
+    <div class="progress" id="taskprog"><div></div></div>
+    <pre id="out">（结果）</pre>
+    <div id="pages"></div>
+  </div>
+
+  <div class="card">
+    <h3>队列概览</h3>
+    <div class="row"><button class="sec" onclick="queueInfo()">刷新 /task/queue/info</button></div>
+    <pre id="qinfo">（点击刷新）</pre>
+  </div>
+
+</div>
+<script>
+const $ = s => document.querySelector(s);
+function fileToB64(file){return new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(file);});}
+function engineKey(eng){return eng.replace('paddleocr-vl','paddle').replace('unlimited-ocr','unlimited').replace('glmocr','glmocr');}
+
+async function checkHealth(eng){
+  const key=engineKey(eng);
+  const dot=$('#d-'+key);
+  try{
+    const r=await fetch('/'+eng+'/health'); const j=await r.json();
+    const ok = j.ok===true || (j.status==='ok');
+    dot.className='dot '+(ok?'on':'off');
+    $('#h-'+key).textContent = ok ? (j.model_loaded!==undefined?('model_loaded='+j.model_loaded):JSON.stringify(j).slice(0,80)) : (j.error||j.status||'off');
+  }catch(e){ dot.className='dot off'; $('#h-'+key).textContent='请求失败'; }
+}
+
+function renderPages(pages){
+  const box=$('#pages'); box.innerHTML='';
+  if(!pages||!pages.length){box.innerHTML='<div class="hint">无页面结果</div>';return;}
+  const wrap=document.createElement('div'); wrap.className='pages';
+  for(const p of pages){
+    const d=document.createElement('div'); d.className='page';
+    const types={}; (p.elements||[]).forEach(e=>types[e.type]=(types[e.type]||0)+1);
+    const chips=Object.entries(types).map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join('');
+    d.innerHTML=`<div class="pmeta">page ${p.page} · ${p.width}×${p.height}px · elements=${(p.elements||[]).length} · crops=${(p.crops||[]).length}</div>
+      <div class="chips">${chips}</div>
+      <div class="md-out">${(p.markdown||'').replace(/</g,'&lt;')}</div>`;
+    const crops=document.createElement('div'); crops.className='crops';
+    (p.crops||[]).forEach(c=>{
+      const cc=document.createElement('div'); cc.className='crop';
+      const img=document.createElement('img'); img.src=c.base64; img.title=c.filename;
+      cc.appendChild(img); crops.appendChild(cc);
+    });
+    d.appendChild(crops); wrap.appendChild(d);
+  }
+  box.appendChild(wrap);
+}
+
+async function doParse(){
+  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
+  const b64=await fileToB64(f);
+  const eng=$('#engine').value;
+  let body;
+  if(eng==='glmocr') body={images:[b64], doc_id:$('#docId').value};
+  else if(eng==='unlimited-ocr') body={images:[b64], doc_id:$('#docId').value, prompt:'请准确识别图片中的所有文字，保持原始排版'};
+  else body={images:[{page:1,image_data:b64}], task_type:'general', language:'ch', doc_id:$('#docId').value};
+  $('#out').textContent='请求中…'; renderPages([]);
+  try{
+    const r=await fetch('/'+eng+'/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    $('#out').textContent=JSON.stringify(j,null,2);
+    renderPages(j.pages);
+  }catch(e){ $('#out').textContent='错误: '+e; }
+}
+
+let _pollTimer=null;
+async function doTask(){
+  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
+  const b64=await fileToB64(f);
+  const eng=$('#engine').value;
+  const body={engine:eng, images:[b64], doc_id:$('#docId').value};
+  if(eng==='unlimited-ocr') body.prompt='请准确识别图片中的所有文字，保持原始排版';
+  if(eng==='paddleocr-vl'){body.task_type='general';body.language='ch';}
+  $('#taskbar').textContent='提交中…';
+  try{
+    const r=await fetch('/task/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j=await r.json();
+    if(!j.task_id){ $('#taskbar').textContent='提交失败: '+JSON.stringify(j); return; }
+    $('#taskbar').textContent=`task_id=${j.task_id} status=${j.status} position=${j.position} est=${j.estimated_wait_seconds}s`;
+    pollTask(j.task_id);
+  }catch(e){ $('#taskbar').textContent='提交错误: '+e; }
+}
+
+function pollTask(id){
+  if(_pollTimer) clearInterval(_pollTimer);
+  _pollTimer=setInterval(async()=>{
+    try{
+      const s=await (await fetch('/task/'+id+'/status')).json();
+      $('#taskbar').textContent=`task_id=${id} status=${s.status} progress=${s.progress??''} page=${s.current_page??''}/${s.total_pages??''} pos=${s.position??''} ${s.error?('err='+s.error):''}`;
+      $('#taskprog>div').style.width=(s.progress||0)+'%';
+      if(['completed','failed','cancelled'].includes(s.status)){
+        clearInterval(_pollTimer);
+        const res=await (await fetch('/task/'+id+'/result')).json();
+        $('#out').textContent=JSON.stringify(res,null,2);
+        renderPages(res.pages);
+      }
+    }catch(e){ $('#taskbar').textContent='轮询错误: '+e; }
+  },2500);
+}
+
+async function queueInfo(){
+  try{ const j=await (await fetch('/task/queue/info')).json(); $('#qinfo').textContent=JSON.stringify(j,null,2); }
+  catch(e){ $('#qinfo').textContent='错误: '+e; }
+}
+
+// 页面加载时自动检查三引擎
+['glmocr','unlimited-ocr','paddleocr-vl'].forEach(checkHealth);
+</script>
+</body>
+</html>

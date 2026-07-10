@@ -1,0 +1,31 @@
+# PaddleOCR-VL 引擎（单 GPU 容器编排）
+# 容器内部同时跑：vLLM VLM 服务(:8118, GPU) + 本 FastAPI 服务(:8088)
+#   - PP-DocLayoutV3 布局检测：容器内 paddlepaddle-gpu，GPU
+#   - VLM 识别：容器内 vLLM，GPU
+#   - LLM 分析：转发到本机 llama.cpp(:8085)，经 host.docker.internal
+#   - TTS：容器内 edge-tts（联网）
+# 宿主机只需 docker compose up，对外暴露 8088（API）/ 8118（vLLM，可选）。
+services:
+  paddleocr-vl:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paddleocr-vl-16-gpu:latest
+    container_name: paddleocr-vl-16
+    environment:
+      - LLM_BASE_URL=http://host.docker.internal:8085/v1
+      - LLM_API_KEY=not-needed
+      - LLM_MODEL=LFM2-24B
+      - PYTHONHTTPSVERIFY=0
+      - MODELSCOPE_DOWNLOAD_DISABLE_CERT_VERIFICATION=true
+      - PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK=true
+    ports:
+      - "8091:8091"   # 引擎服务（统一代理 :8088 → /paddleocr-vl/* → 本容器 :8091）
+      - "8118:8118"   # vLLM（可选暴露，便于排查）
+    volumes:
+      # 复用宿主机已下载的布局模型缓存（PP-DocLayoutV3 等）
+      - ./.cache/paddlex:/home/paddleocr/.paddlex
+      # 挂载 HF 格式的 VLM 模型（read-only）到 vLLM 期望路径
+      - ./.cache/vl_hf_model:/home/paddleocr/.paddlex/official_models/PaddleOCR-VL-1.6:ro
+    gpus: all
+    restart: unless-stopped

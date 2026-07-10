@@ -1,0 +1,51 @@
+# ===== 环境与密钥（绝不提交） =====
+# .env 含内网 IP、绝对路径、模型路径等本地配置
+.env
+.env.local
+.env.*.local
+*.secret
+*.key
+
+# ===== Python =====
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.python-version
+
+# ===== 模型与缓存（体积大，运行时下载） =====
+.cache/
+models/
+*.gguf
+*.bin
+*.safetensors
+*.onnx
+
+# ===== 日志与临时文件 =====
+*.log
+logs/
+proxy_access.log
+.workbuddy/proxy_access.log
+
+# ===== 本地 Agent 工作记忆（不进仓库） =====
+.workbuddy/
+
+# ===== 编辑器 / OS =====
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ===== Node（若后续接入前端） =====
+node_modules/
+npm-debug.log*
+yarn-error.log*
