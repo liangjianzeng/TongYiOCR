@@ -128,7 +128,12 @@ def parse(images: List[dict], task_type: str = "general", language: str = "ch", 
             if pil is not None:
                 crop_b64 = _crop_to_base64(pil, bbox)
                 if crop_b64:
-                    crops.append({"filename": f"{doc_id}_page{page_no}_type{b_idx}.png", "base64": crop_b64})
+                    crops.append({
+                        "filename": f"{doc_id}_page{page_no}_type{b_idx}.png",
+                        "base64": crop_b64,
+                        "element_index": len(elements) - 1,   # 该 crop 对应元素的 elements[] 下标
+                        "bbox": [float(v) for v in bbox],
+                    })
         pages.append({
             "page": page_no,
             "width": width,

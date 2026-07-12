@@ -19,6 +19,8 @@ class OCRCrop(BaseModel):
     """裁剪图（base64 内联，PNG）"""
     filename: str = Field(..., description="裁剪图文件名，命名 {doc_id}_page{page}_type{index}.png")
     base64: str = Field(..., description="data:image/png;base64,... 格式")
+    element_index: Optional[int] = Field(None, description="该裁剪图对应元素在 elements[] 中的下标（用于前端排版还原匹配）")
+    bbox: Optional[List[float]] = Field(None, description="[x1,y1,x2,y2] 像素坐标（与对应元素 bbox 一致）")
 
 
 class OCRElement(BaseModel):

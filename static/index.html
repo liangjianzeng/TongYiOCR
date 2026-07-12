@@ -15,6 +15,8 @@
   select,input[type=text]{background:#161c2b;color:#e8e8e8;border:1px solid #2a3148;border-radius:6px;padding:7px 9px;}
   label{font-size:13px;color:#9fb0d0;}
   pre{background:#11151f;border:1px solid #232a3c;border-radius:8px;padding:12px;overflow:auto;font-size:12px;max-height:340px;}
+  /* 接口响应报文预览：整段换行、只纵向滚动，杜绝横向滚动条 */
+  #out,#qinfo{white-space:pre-wrap;word-break:break-word;overflow-wrap:anywhere;overflow-x:hidden;overflow-y:auto;}
   .hint{color:#7e8aa8;font-size:12px;margin:6px 0;}
   .engines{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;}
   .eng{background:#161c2b;border:1px solid #2a3148;border-radius:8px;padding:10px 12px;min-width:220px;}
@@ -34,6 +36,50 @@
   .taskbar{font-size:13px;color:#bcd;margin-top:8px;}
   .progress{height:8px;background:#222a40;border-radius:4px;overflow:hidden;margin-top:6px;}
   .progress>div{height:100%;background:#3a7afe;width:0;}
+
+  /* ===== 结构化 Markdown 呈现 ===== */
+  .view-tabs{display:flex;gap:6px;align-items:center;margin:8px 0;flex-wrap:wrap;}
+  .view-tabs button{font-size:12px;padding:5px 11px;background:#222a40;color:#cdd;border-radius:6px;cursor:pointer;border:0;}
+  .view-tabs button.active{background:#3a7afe;color:#fff;}
+  .md-render{background:#fafafa;color:#111;border-radius:8px;padding:12px 14px;margin-top:6px;font-size:13px;line-height:1.6;overflow-y:auto;overflow-x:hidden;max-height:360px;white-space:normal;word-break:break-word;}
+  .md-render>*:first-child{margin-top:0;}
+  .md-render h1,.md-render h2,.md-render h3,.md-render h4{margin:.5em 0 .3em;line-height:1.3;}
+  .md-render h1{font-size:1.5em;border-bottom:1px solid #ddd;padding-bottom:.25em;}
+  .md-render h2{font-size:1.3em;border-bottom:1px solid #eee;padding-bottom:.2em;}
+  .md-render h3{font-size:1.12em;}
+  .md-render p{margin:.5em 0;}
+  .md-render ul,.md-render ol{margin:.4em 0;padding-left:1.5em;}
+  .md-render li{margin:.2em 0;}
+  .md-render code{background:#eee;padding:1px 4px;border-radius:4px;font-family:ui-monospace,Menlo,Consolas,monospace;font-size:.92em;}
+  .md-render pre{background:#1e2433;color:#e8e8e8;padding:10px 12px;border-radius:6px;overflow-x:hidden;white-space:pre-wrap;word-break:break-word;}
+  .md-render pre code{background:none;color:inherit;padding:0;}
+  .md-render table{border-collapse:collapse;margin:.5em 0;font-size:.92em;width:100%;table-layout:fixed;}
+  .md-render th,.md-render td{border:1px solid #ccc;padding:4px 8px;text-align:left;vertical-align:top;word-break:break-word;overflow-wrap:anywhere;}
+  .md-render th{background:#f0f0f0;}
+  .md-render blockquote{margin:.5em 0;padding:.3em .8em;border-left:3px solid #ccc;color:#555;}
+  .md-render img{max-width:100%;border:1px solid #ddd;border-radius:4px;}
+  .md-render hr{border:none;border-top:1px solid #ddd;margin:.8em 0;}
+
+/* ===== 排版还原视图 ===== */
+.layout-wrap{position:relative;margin-top:8px;}
+.layout-toolbar{display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap;}
+.layout-toolbar label{font-size:11px;color:#9fb0d0;}
+.layout-toolbar input[type=range]{width:120px;accent-color:#3a7afe;}
+.layout-zoom-label{font-size:11px;color:#7e8aa8;min-width:42px;text-align:center;font-weight:600;}
+.layout-view{position:relative;border:2px solid #3a7afe;border-radius:10px;overflow:auto;background:#f5f6f8;}
+.layout-page{position:relative;margin:0 auto;display:inline-block;background:#fff;}   /* 由内部 img 撑开尺寸；白底用于还原层显示 */
+.layout-page>img.bg{display:block;border-radius:4px;min-width:200px;} /* 防止缩成极小方块 */
+.layout-img-status{text-align:center;padding:6px;font-size:11px;color:#9fe6b0;font-weight:600;letter-spacing:.5px;}
+.layout-img-status.err{color:#ff7a7a;}
+  /* 默认：不显示原图底图，只呈现结构化还原层（白底上的 bbox 叠加）；
+     勾选"显示原图"后（.layout-page.show-original）才把原图显示出来做对照 */
+  .layout-page:not(.show-original)>img.bg{visibility:hidden;}
+  .layout-box{position:absolute;overflow:hidden;font-size:11px;line-height:1.2;color:#111;background:transparent;padding:1px 2px;box-sizing:border-box;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000;}
+  .layout-box>img{display:block;width:100%;height:100%;object-fit:contain;border-radius:2px;}
+.layout-box.show-border{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
+.layout-box .lt{font-weight:700;color:#1b5ec9;font-size:10px;}
+.layout-note{color:#7e8aa8;font-size:12px;padding:12px 14px;}
+  .hidden{display:none!important;}
 </style>
 </head>
 <body>
@@ -74,11 +120,63 @@
     <pre id="qinfo">（点击刷新）</pre>
   </div>
 
+  <div class="card">
+    <h3>服务器实时日志 <span id="logstat" class="hint">连接中…</span></h3>
+    <div class="row">
+      <button class="sec" id="btnLogPause" onclick="toggleLog()">暂停</button>
+      <button class="sec" onclick="clearLog()">清空</button>
+      <label class="hint"><input type="checkbox" id="logAuto" checked/> 自动滚动</label>
+    </div>
+    <pre id="logview" style="max-height:320px;"></pre>
+  </div>
+
 </div>
 <script>
 const $ = s => document.querySelector(s);
+let lastImageDataUrl = null;   // 最近一次上传的原图（用于排版还原底图）
 function fileToB64(file){return new Promise(r=>{const fr=new FileReader();fr.onload=()=>r(fr.result);fr.readAsDataURL(file);});}
+// 响应报文预览：crops 的 base64 是巨长单行，直接整段换行会拖垮浏览器渲染（卡死）。
+// 预览时把超长 base64 截断为长度提示——原图作物区本就会以图片形式展示，数据不丢。
+function previewJson(obj){
+  try{
+    return JSON.stringify(obj, (k,v)=>{
+      if(k==='base64' && typeof v==='string' && v.length>64) return '<base64 '+v.length+' 字符已省略>';
+      return v;
+    }, 2);
+  }catch(e){ return JSON.stringify(obj,null,2); }
+}
 function engineKey(eng){return eng.replace('paddleocr-vl','paddle').replace('unlimited-ocr','unlimited').replace('glmocr','glmocr');}
+
+// 引擎可选状态：下拉只展示“经健康检查确认可用”的引擎；未检查的先保留，已确认不可用的移除
+const ENGINE_LABELS={ 'glmocr':'GLM-OCR', 'unlimited-ocr':'Unlimited-OCR', 'paddleocr-vl':'PaddleOCR-VL' };
+const ENGINE_ORDER=['glmocr','unlimited-ocr','paddleocr-vl'];
+const engineState={};          // eng -> true(可用)/false(不可用)/undefined(未检查)
+let _anyHealthChecked=false;   // 是否有健康检查已返回
+
+// 依据 engineState 重建下拉：移除确认不可用的引擎；无可用时禁用并占位提示
+function rebuildEngineDropdown(){
+  if(!_anyHealthChecked) return;              // 检查未返回前保留静态全部选项
+  const sel=$('#engine');
+  const showable=ENGINE_ORDER.filter(e=>engineState[e]!==false);  // 仅排除“已确认不可用”
+  const prev=sel.value;
+  sel.innerHTML='';
+  if(showable.length===0){
+    const o=document.createElement('option');
+    o.value=''; o.textContent='（无可用引擎，请修复后点“检查”）'; o.disabled=true;
+    sel.appendChild(o); sel.disabled=true;
+    $('#btnSync').disabled=true; $('#btnTask').disabled=true;
+    return;
+  }
+  sel.disabled=false; $('#btnSync').disabled=false; $('#btnTask').disabled=false;
+  for(const e of showable){
+    const o=document.createElement('option');
+    o.value=e; o.textContent=ENGINE_LABELS[e]+(engineState[e]===true?'':'（检查中）');
+    sel.appendChild(o);
+  }
+  // 优先保持用户当前选择（只要仍展示）；否则切到第一个已确认可用，再否则第一个
+  if(showable.includes(prev)) sel.value=prev;
+  else sel.value=(showable.find(e=>engineState[e]===true))||showable[0];
+}
 
 async function checkHealth(eng){
   const key=engineKey(eng);
@@ -86,9 +184,12 @@ async function checkHealth(eng){
   try{
     const r=await fetch('/'+eng+'/health'); const j=await r.json();
     const ok = j.ok===true || (j.status==='ok');
+    engineState[eng]=ok;
     dot.className='dot '+(ok?'on':'off');
-    $('#h-'+key).textContent = ok ? (j.model_loaded!==undefined?('model_loaded='+j.model_loaded):JSON.stringify(j).slice(0,80)) : (j.error||j.status||'off');
-  }catch(e){ dot.className='dot off'; $('#h-'+key).textContent='请求失败'; }
+    $('#h-'+key).textContent = ok ? (j.model_loaded!==undefined?('model_loaded='+j.model_loaded):JSON.stringify(j).slice(0,80)) : (j.engine&&j.engine.error ? j.engine.error : (j.error||j.status||'off'));
+  }catch(e){ dot.className='dot off'; $('#h-'+key).textContent='请求失败'; engineState[eng]=false; }
+  _anyHealthChecked=true;
+  rebuildEngineDropdown();
 }
 
 function renderPages(pages){
@@ -101,21 +202,230 @@ function renderPages(pages){
     const chips=Object.entries(types).map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join('');
     d.innerHTML=`<div class="pmeta">page ${p.page} · ${p.width}×${p.height}px · elements=${(p.elements||[]).length} · crops=${(p.crops||[]).length}</div>
       <div class="chips">${chips}</div>
-      <div class="md-out">${(p.markdown||'').replace(/</g,'&lt;')}</div>`;
-    const crops=document.createElement('div'); crops.className='crops';
-    (p.crops||[]).forEach(c=>{
-      const cc=document.createElement('div'); cc.className='crop';
-      const img=document.createElement('img'); img.src=c.base64; img.title=c.filename;
-      cc.appendChild(img); crops.appendChild(cc);
-    });
-    d.appendChild(crops); wrap.appendChild(d);
+      <div class="view-tabs">
+        <button data-v="md" class="active" onclick="switchView(this,'md')">Markdown</button>
+        <button data-v="layout" onclick="switchView(this,'layout')">排版还原</button>
+        <label class="hint"><input type="checkbox" checked onchange="toggleBorders(this)"/> 显示边框</label>
+        <label class="hint"><input type="checkbox" onchange="toggleOriginal(this)"/> 显示原图</label>
+      </div>
+      <div class="pview pview-md"></div>
+      <div class="pview pview-layout hidden"></div>`;
+    // Markdown 视图（结构化渲染）
+    const mdEl=document.createElement('div'); mdEl.className='md-render';
+    mdEl.innerHTML = renderMarkdown(p.markdown||'');
+    d.querySelector('.pview-md').appendChild(mdEl);
+    // 排版还原视图（原图底 + bbox 叠加）
+    d.querySelector('.pview-layout').appendChild(buildLayoutView(p, lastImageDataUrl));
+    wrap.appendChild(d);
   }
   box.appendChild(wrap);
+}
+
+function switchView(btn, v){
+  const page=btn.closest('.page');
+  page.querySelectorAll('.view-tabs button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active');
+  page.querySelector('.pview-md').classList.toggle('hidden', v!=='md');
+  page.querySelector('.pview-layout').classList.toggle('hidden', v!=='layout');
+}
+
+function toggleOriginal(cb){
+  const page=cb.closest('.page');
+  const lp=page.querySelector('.layout-page');
+  if(lp) lp.classList.toggle('show-original', cb.checked);
+}
+
+function toggleBorders(cb){
+  const page=cb.closest('.page');
+  page.querySelectorAll('.layout-box').forEach(b=>b.classList.toggle('show-border', cb.checked));
+}
+
+// 用解析出的 bbox 在页面上还原排版：原图作底，文字框按坐标绝对定位叠加
+// 支持滚轮/滑块缩放（10%~300%），默认 100% 原始尺寸
+function buildLayoutView(p, imgUrl){
+  const W=p.width||1, H=p.height||1;
+  const outer=document.createElement('div'); outer.className='layout-wrap';
+
+  // 工具栏
+  const tb=document.createElement('div'); tb.className='layout-toolbar';
+  const zLabel=document.createElement('span'); zLabel.className='layout-zoom-label'; zLabel.textContent='100%';
+  const slider=document.createElement('input'); slider.type='range'; slider.min='10'; slider.max='300'; slider.value='100'; slider.step='10';
+  const resetBtn=document.createElement('button'); resetBtn.className='sec'; resetBtn.textContent='重置缩放';
+  const status=document.createElement('span'); status.className='layout-img-status'; status.textContent='加载中…';
+  tb.appendChild(document.createTextNode('缩放 '));tb.appendChild(slider);tb.appendChild(zLabel);
+  tb.appendChild(resetBtn);tb.appendChild(status);
+  outer.appendChild(tb);
+
+  // 视图容器
+  const wrap=document.createElement('div'); wrap.className='layout-view';
+  const page=document.createElement('div'); page.className='layout-page';
+
+  // 原图底图
+  if(imgUrl){
+    const img=document.createElement('img'); img.className='bg';
+    img.alt='排版还原底图'; img.src=imgUrl;
+    img.onload=function(){
+      status.className='layout-img-status';
+      status.textContent='原图就绪 '+this.naturalWidth+'×'+this.naturalHeight+'px（默认隐藏，勾选“显示原图”对照）';
+      setZoom(parseInt(slider.value,10));
+    };
+    img.onerror=function(){
+      status.className='layout-img-status err'; status.textContent='✗ 加载失败';
+    };
+    page.appendChild(img);
+  } else {
+    // 无原图：按页面宽高比撑开还原层，保证 bbox 叠加仍有尺寸基准
+    page.style.aspectRatio = W + ' / ' + H;
+    page.style.width = '100%';
+    status.className='layout-img-status err'; status.textContent='⚠ 无原图（仅还原层）';
+  }
+
+  // 文字框（百分比坐标 → 相对 page 定位）
+  // 预建 crop 索引：按 element_idx 或 bbox 近似匹配，供 figure 等类型内嵌图片
+  const crops=p.crops||[];
+  const cropByIndex={};
+  const cropByBbox=[];   // [{bbox:[x1,y1,x2,y2], base64}]
+  for(let ci=0;ci<crops.length;ci++){
+    const c=crops[ci];
+    if(c.base64) {
+      if(typeof c.element_index==='number'){ cropByIndex[c.element_index]=c.base64; }
+      if(Array.isArray(c.bbox)&&c.bbox.length===4){ cropByBbox.push({bbox:c.bbox, base64:c.base64}); }
+    }
+  }
+  // bbox IoU 辅助：找最重叠的 crop
+  function findCropBbox(x1,y1,x2,y2){
+    let best=null, bestIoU=0;
+    for(const cb of cropByBbox){
+      const ix1=Math.max(x1,cb.bbox[0]), iy1=Math.max(y1,cb.bbox[1]);
+      const ix2=Math.min(x2,cb.bbox[2]), iy2=Math.min(y2,cb.bbox[3]);
+      if(ix2<=ix1||iy2<=iy1) continue;
+      const inter=(ix2-ix1)*(iy2-iy1);
+      const area=(x2-x1)*(y2-y1), cArea=(cb.bbox[2]-cb.bbox[0])*(cb.bbox[3]-cb.bbox[1]);
+      const iou=inter/(Math.min(area,cArea)||1);
+      if(iou>bestIoU){bestIoU=iou; best=cb.base64;}
+    }
+    return best;
+  }
+
+  const els=p.elements||[]; let placed=0;
+  for(let ei=0;ei<els.length;ei++){
+    const e=els[ei];
+    const b=e.bbox;
+    if(!Array.isArray(b)||b.length!==4) continue;
+    const [x1,y1,x2,y2]=b;
+    if(x2<=x1||y2<=y1) continue;
+    const box=document.createElement('div'); box.className='layout-box show-border';
+    box.style.left=(x1/W*100)+'%'; box.style.top=(y1/H*100)+'%';
+    box.style.width=((x2-x1)/W*100)+'%'; box.style.height=((y2-y1)/H*100)+'%';
+    if(e.type==='table' && e.html){
+      box.innerHTML=`<div class="lt">[表格]</div>${e.html}`;
+    } else if(e.type==='figure'){
+      // 优先用 element_index 精确匹配，其次 bbox IoU 模糊匹配
+      const imgSrc=cropByIndex[ei]||findCropBbox(x1,y1,x2,y2);
+      if(imgSrc){
+        const img=document.createElement('img'); img.src=imgSrc; img.alt=e.caption||e.content||'图'+ei;
+        img.onerror=function(){ this.style.display='none'; box.textContent='🖼 '+(e.caption||e.content||'加载失败'); };
+        box.appendChild(img);
+      } else {
+        box.textContent='🖼 '+(e.caption||e.content||'');
+      }
+    } else {
+      let body='';
+      if(e.type==='formula') body='⨎ '+(e.latex||e.content||'');
+      else body=e.content||'';
+      box.textContent=body;
+    }
+    page.appendChild(box); placed++;
+  }
+  wrap.appendChild(page);
+  outer.appendChild(wrap);
+
+  // 缩放控制（CSS transform，不影响布局计算）
+  function setZoom(pct){
+    zLabel.textContent=pct+'%';
+    page.style.transform='scale('+pct/100+')';
+    page.style.transformOrigin='top left';
+  }
+  slider.oninput=function(){ setZoom(parseInt(this.value,10)); };
+  resetBtn.onclick=function(){ slider.value=100; setZoom(100); };
+  wrap.onwheel=function(ev){
+    ev.preventDefault();
+    let v=parseInt(slider.value,10)||100;
+    v+=ev.deltaY<0?10:-10;
+    v=Math.max(10,Math.min(300,v));
+    slider.value=v; setZoom(v);
+  };
+
+  if(placed===0){
+    const note=document.createElement('div'); note.className='layout-note';
+    note.textContent=imgUrl?'该引擎未返回 bbox，无法还原排版 —— 请切换 Markdown 视图。':'无坐标且无原图。';
+    wrap.appendChild(note);
+  }
+  return outer;
+}
+
+// ===== 轻量 Markdown → HTML（离线、无外部依赖）=====
+function renderMarkdown(md){
+  if(!md) return '';
+  const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const inline = s => {
+    s = esc(s);
+    s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m,a,u)=>`<img alt="${a}" src="${u}"/>`);
+    s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m,t,u)=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`);
+    s = s.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+    s = s.replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, '$1<em>$2</em>');
+    s = s.replace(/`([^`]+)`/g, '<code>$1</code>');
+    return s;
+  };
+  const isTableSep = l => /^\s*\|?[\s:|-]+\|?\s*$/.test(l) && l.includes('-');
+  const splitRow = l => l.split('|').map(c=>c.trim()).filter((c,i,a)=>!(i===0&&c==='')&&!(i===a.length-1&&c===''));
+  const lines = md.replace(/\r\n/g,'\n').split('\n');
+  let html='', i=0, inCode=false, codeBuf=[];
+  const isBlockStart = l => /^(#{1,6})\s/.test(l) || /^\s*[-*+]\s+/.test(l) || /^\s*\d+\.\s+/.test(l) || l.startsWith('```') || l.startsWith('>') || (l.includes('|') && i+1<lines.length && isTableSep(lines[i+1]));
+  while(i<lines.length){
+    const line=lines[i];
+    if(line.startsWith('```')){
+      if(!inCode){ inCode=true; codeBuf=[]; }
+      else { html+='<pre><code>'+esc(codeBuf.join('\n'))+'</code></pre>'; inCode=false; }
+      i++; continue;
+    }
+    if(inCode){ codeBuf.push(line); i++; continue; }
+    if(line.includes('|') && i+1<lines.length && isTableSep(lines[i+1])){
+      const head=splitRow(line); i+=2;
+      const rows=[];
+      while(i<lines.length && lines[i].includes('|')){ rows.push(splitRow(lines[i])); i++; }
+      let t='<table><thead><tr>'+head.map(h=>`<th>${inline(h)}</th>`).join('')+'</tr></thead><tbody>';
+      for(const r of rows){ t+='<tr>'+r.map(c=>`<td>${inline(c)}</td>`).join('')+'</tr>'; }
+      html+=t+'</tbody></table>'; continue;
+    }
+    const mh=line.match(/^(#{1,6})\s+(.*)$/);
+    if(mh){ const lvl=mh[1].length; html+=`<h${lvl}>${inline(mh[2])}</h${lvl}>`; i++; continue; }
+    if(/^(\s*[-*_]){3,}\s*$/.test(line)){ html+='<hr/>'; i++; continue; }
+    if(line.startsWith('>')){
+      const bq=[]; while(i<lines.length && lines[i].startsWith('>')){ bq.push(lines[i].replace(/^>\s?/,'')); i++; }
+      html+='<blockquote>'+inline(bq.join(' '))+'</blockquote>'; continue;
+    }
+    if(/^\s*[-*+]\s+/.test(line)){
+      const items=[]; while(i<lines.length && /^\s*[-*+]\s+/.test(lines[i])){ items.push(lines[i].replace(/^\s*[-*+]\s+/,'')); i++; }
+      html+='<ul>'+items.map(it=>`<li>${inline(it)}</li>`).join('')+'</ul>'; continue;
+    }
+    if(/^\s*\d+\.\s+/.test(line)){
+      const items=[]; while(i<lines.length && /^\s*\d+\.\s+/.test(lines[i])){ items.push(lines[i].replace(/^\s*\d+\.\s+/,'')); i++; }
+      html+='<ol>'+items.map(it=>`<li>${inline(it)}</li>`).join('')+'</ol>'; continue;
+    }
+    if(line.trim()===''){ i++; continue; }
+    const para=[line]; i++;
+    while(i<lines.length && lines[i].trim()!=='' && !isBlockStart(lines[i])){ para.push(lines[i]); i++; }
+    html+='<p>'+inline(para.join(' '))+'</p>';
+  }
+  if(inCode){ html+='<pre><code>'+esc(codeBuf.join('\n'))+'</code></pre>'; }
+  return html;
 }
 
 async function doParse(){
   const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
   const b64=await fileToB64(f);
+  lastImageDataUrl = b64;
   const eng=$('#engine').value;
   let body;
   if(eng==='glmocr') body={images:[b64], doc_id:$('#docId').value};
@@ -125,7 +435,7 @@ async function doParse(){
   try{
     const r=await fetch('/'+eng+'/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
     const j=await r.json();
-    $('#out').textContent=JSON.stringify(j,null,2);
+    $('#out').textContent=previewJson(j);
     renderPages(j.pages);
   }catch(e){ $('#out').textContent='错误: '+e; }
 }
@@ -134,6 +444,7 @@ let _pollTimer=null;
 async function doTask(){
   const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
   const b64=await fileToB64(f);
+  lastImageDataUrl = b64;
   const eng=$('#engine').value;
   const body={engine:eng, images:[b64], doc_id:$('#docId').value};
   if(eng==='unlimited-ocr') body.prompt='请准确识别图片中的所有文字，保持原始排版';
@@ -158,7 +469,7 @@ function pollTask(id){
       if(['completed','failed','cancelled'].includes(s.status)){
         clearInterval(_pollTimer);
         const res=await (await fetch('/task/'+id+'/result')).json();
-        $('#out').textContent=JSON.stringify(res,null,2);
+        $('#out').textContent=previewJson(res);
         renderPages(res.pages);
       }
     }catch(e){ $('#taskbar').textContent='轮询错误: '+e; }
@@ -172,6 +483,40 @@ async function queueInfo(){
 
 // 页面加载时自动检查三引擎
 ['glmocr','unlimited-ocr','paddleocr-vl'].forEach(checkHealth);
+
+// ============ 服务器实时日志（SSE /logs/stream） ============
+let _es = null, _logPaused = false;
+function startLog(){
+  if(_es) return;
+  try { _es = new EventSource('/logs/stream'); }
+  catch(e){ $('#logstat').textContent='○ 浏览器不支持'; return; }
+  _es.onopen  = () => { $('#logstat').textContent='● 已连接'; };
+  _es.onerror = () => { $('#logstat').textContent='○ 断开，重连中…'; };
+  _es.onmessage = (ev) => {
+    if(_logPaused) return;
+    let e; try { e = JSON.parse(ev.data); } catch(_) { return; }
+    appendLog(e);
+  };
+}
+function appendLog(e){
+  const pre = $('#logview');
+  const q = e.query ? ('?'+e.query) : '';
+  const t = (e.ts||'').slice(11,19);
+  const div = document.createElement('div');
+  div.className = 'logline';
+  div.textContent = `[${t}] ${e.method} ${e.path}${q} → ${e.status} (${e.duration_ms}ms) ${e.client}`;
+  div.style.color = e.status>=500 ? '#ff7a7a' : (e.status>=400 ? '#ffd27a' : '#9fe6b0');
+  pre.appendChild(div);
+  while(pre.childElementCount > 300) pre.removeChild(pre.firstChild);
+  if($('#logAuto').checked) pre.scrollTop = pre.scrollHeight;
+}
+function toggleLog(){
+  _logPaused = !_logPaused;
+  $('#btnLogPause').textContent = _logPaused ? '继续' : '暂停';
+  $('#logstat').textContent = _logPaused ? '⏸ 已暂停' : '● 已连接';
+}
+function clearLog(){ $('#logview').innerHTML = ''; }
+startLog();
 </script>
 </body>
 </html>

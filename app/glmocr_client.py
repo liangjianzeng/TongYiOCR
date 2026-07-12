@@ -205,7 +205,12 @@ def _build_elements_and_crops(
             crop_b64 = _crop_to_base64(pil, bbox_px)
             if crop_b64:
                 fname = f"{doc_id}_page{page}_type{idx}.png"
-                crops.append({"filename": fname, "base64": crop_b64})
+                crops.append({
+                    "filename": fname,
+                    "base64": crop_b64,
+                    "element_index": len(elements),   # 该 el 即将 append，索引即 len(elements)
+                    "bbox": bbox_px,
+                })
         elements.append(el)
     return elements, crops
 

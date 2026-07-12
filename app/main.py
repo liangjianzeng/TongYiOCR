@@ -16,10 +16,15 @@
   /task/queue/info   GET  队列概览
 """
 import os
+import json
+import asyncio
+import collections
+import threading
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, APIRouter, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -62,6 +67,32 @@ app.add_middleware(
 )
 
 
+# ===================== 请求日志（内存 ring buffer + SSE 实时推送） =====================
+_log_lock = threading.Lock()
+_request_logs = collections.deque(maxlen=500)
+_log_seq = 0
+
+# 日志时间统一使用北京时间（UTC+8），避免前端按 UTC 显示造成 8 小时偏差
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+# 过滤探活 / 静态 / 文档 / 队列轮询等噪音，避免刷屏
+_NOISE_PATHS = {"/health", "/docs", "/openapi.json", "/redoc", "/favicon.ico"}
+
+def _is_noise(path: str) -> bool:
+    if path.startswith("/logs") or path.startswith("/static"):
+        return True
+    if path in _NOISE_PATHS or path == "/task/queue/info":
+        return True
+    return False
+
+def _push_log(entry: dict):
+    global _log_seq
+    with _log_lock:
+        _log_seq += 1
+        entry["id"] = _log_seq
+        _request_logs.append(entry)
+
+
 # ===================== 访问日志（写入文件，便于远程排障） =====================
 class AccessLogMiddleware(BaseHTTPMiddleware):
     _log_path = str(BASE_DIR / ".workbuddy" / "proxy_access.log")
@@ -82,10 +113,22 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         try:
             with open(self._log_path, "a", encoding="utf-8") as f:
                 f.write(
-                    f"{_t.strftime('%Y-%m-%d %H:%M:%S')} {client} {method} {path} -> {status} ({dur_ms:.0f}ms)\n"
+                    f"{datetime.now(BEIJING_TZ).strftime('%Y-%m-%d %H:%M:%S')} {client} {method} {path} -> {status} ({dur_ms:.0f}ms)\n"
                 )
         except Exception:
             pass
+        # 实时日志：推送到内存 buffer（过滤噪音路径，避免刷屏）
+        if not _is_noise(path):
+            _push_log({
+                "ts": datetime.now(BEIJING_TZ).isoformat(timespec="seconds"),
+                "client": client,
+                "method": method,
+                "path": path,
+                "query": request.url.query,
+                "status": status,
+                "duration_ms": round(dur_ms, 1),
+                "ua": request.headers.get("user-agent", "")[:100],
+            })
         return response
 
 
@@ -98,12 +141,16 @@ glmocr_router = APIRouter(prefix="/glmocr", tags=["GLM-OCR"])
 
 @glmocr_router.get("/health")
 def glmocr_health():
+    # 真实探测本机 llama.cpp VLM（8089），不可用则标红
+    eng = glmocr_client.engine_health()
+    sdk_ok = glmocr_client.glmocr_available()
+    ok = bool(eng.get("ok")) and sdk_ok
     return {
-        "ok": True,
-        "status": "ok",
-        "glmocr_available": glmocr_client.glmocr_available(),
+        "ok": ok,
+        "status": "ok" if ok else "error",
+        "glmocr_available": sdk_ok,
         "llama_port": config.GLM_OCR_API_PORT,
-        "engine": glmocr_client.engine_health(),
+        "engine": eng,
     }
 
 
@@ -271,6 +318,37 @@ def health():
             "version": "1.0.0",
             "error": str(e),
         }
+
+
+@app.get("/logs")
+def get_logs(limit: int = 100):
+    limit = max(1, min(limit, 500))
+    with _log_lock:
+        items = list(_request_logs)[-limit:]
+    return {"count": len(items), "logs": items}
+
+
+@app.get("/logs/stream")
+async def log_stream():
+    async def gen():
+        # 初始回填最近 30 条，避免打开面板时空白
+        with _log_lock:
+            backlog = list(_request_logs)[-30:]
+        last_id = backlog[-1]["id"] if backlog else 0
+        for e in backlog:
+            yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+        while True:
+            await asyncio.sleep(0.4)
+            with _log_lock:
+                new_items = [e for e in _request_logs if e["id"] > last_id]
+            for e in new_items:
+                last_id = e["id"]
+                yield f"data: {json.dumps(e, ensure_ascii=False)}\n\n"
+    return StreamingResponse(
+        gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no", "Connection": "keep-alive"},
+    )
 
 
 @app.get("/", response_class=HTMLResponse)
