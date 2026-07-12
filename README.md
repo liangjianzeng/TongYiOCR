@@ -17,7 +17,7 @@ English: TongYiOCR is a unified, stateless OCR gateway that routes requests to m
 - **统一输出结构**：`pages[{page, width, height, markdown, elements[], crops[]}]`，`bbox` 均为**像素坐标**（基于原图尺寸），调用方无需再做归一化换算。
 - **异步任务队列**：显存只够同时跑一个引擎时，提供串行单 worker + 引擎互斥锁的排队方案，支持进度查询 / 取消 / 单页降级。
 - **可插拔引擎**：新增引擎只需实现一个 `*_client.py` 并接入配置，对外契约不变。
-- **内置测试台**：访问 `/` 即可打开可视化测试页，逐个引擎试解析。
+- **内置测试台**：访问 `/` 即可打开可视化测试页，支持：实时请求日志（SSE 流）、按健康状态自动过滤的引擎下拉、Markdown 结构化预览、**排版还原**（白底上按 bbox 叠加还原版面，原图可勾选对照）。
 
 ---
 
@@ -74,6 +74,7 @@ TongYiOCR/
 ├── docker-compose.yml          # 两个 Docker 引擎（Unlimited-OCR :8090 / PaddleOCR-VL :8091）
 ├── docker-compose.gpu.yml      # 单 GPU 容器编排（PaddleOCR-VL 引擎 + vLLM）
 ├── static/index.html           # 内置测试台（/ 路由）
+├── docs/layout-reconstruction-guide.md  # 排版还原参考实现（数据契约 + 前端渲染算法 + 踩坑清单）
 ├── tests/
 │   ├── test_proxy.py           # 接口冒烟测试（离线可跑）
 │   └── k12_sample.png          # 样例图
@@ -232,7 +233,12 @@ docker compose up -d
         }
       ],
       "crops": [                             // 裁剪图（base64 内联，PNG）
-        { "filename": "doc_page1_type0.png", "base64": "data:image/png;base64,iVBORw0…" }
+        {
+          "filename": "doc_page1_type0.png",
+          "base64": "data:image/png;base64,iVBORw0…",
+          "element_index": 0,                  // ★ 对应 elements[] 的下标（figure 还原用）
+          "bbox": [61, 44, 406, 77]            // 与对应元素 bbox 一致（兜底匹配用）
+        }
       ]
     }
   ],
@@ -242,6 +248,7 @@ docker compose up -d
 
 - **坐标系统**：`bbox = [x1, y1, x2, y2]`，像素，基于页面原始尺寸，左上角为原点。
 - **crops 来源**：优先用引擎原生裁剪图；当原生不可用（如 GLM-OCR selfhosted 下 `image_files` 为 None）时，按元素 bbox 从原图裁出，与 `elements` 一一对应。
+- **crops 元数据**：每个 crop 都带 `element_index`（指向 `elements[]` 的下标）与 `bbox`（与对应元素 bbox 一致）。这两个字段供前端把裁剪图对回版面位置——尤其是 `figure` 类几何图 / 插图，`element_index` 用于精确匹配，bbox 用于引擎未返回下标时的 IoU 模糊兜底匹配。
 - **GLM-OCR** 在统一结构之外，额外保留 `json_result` 原文（SDK 原始输出），便于调用方做高级处理。
 
 ---
@@ -328,6 +335,23 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
 状态机：`queued → loading → processing → completed | failed | cancelled`。轮询 `status` 即可获取进度（单页级别 `current_page` / `progress`）。
 
 > **单页降级**：逐页调用引擎，单页超时 / 引擎报错只记入 `page_errors[页码]` 并跳过继续，已成功页保留，整批仍标记为 `completed`。`page_errors` 经 `/task/{id}/result` 返回，调用方可据此重试失败页。因此 200 页十几分钟的串行解析属正常行为，不会因个别慢页而整批失败。
+
+---
+
+## 内置测试台（访问 `/`）
+
+代理根路径 `/` 提供一个零依赖的可视化测试页（`static/index.html`），用于快速试解析与验证还原效果。主要功能：
+
+- **引擎下拉按健康过滤**：下拉只列出健康检查（`/xxx/health`）确认可用的引擎；不可用的自动隐藏。需先确认对应引擎已启动（见上文部署）。
+- **实时请求日志**：通过 SSE 流（`GET /logs/stream`）实时展示代理收到的请求（时间、方法、路径、状态码、耗时、来源 IP）；时间为**北京时间（UTC+8）**；支持暂停 / 清空 / 自动滚动。
+- **Markdown 结构化预览**：解析返回的 Markdown 做轻量结构化渲染（标题 / 列表 / 表格 / 代码块），纵向滚动、按内容换行；响应报文预览中的大图 base64 会自动截断显示，避免浏览器卡死。
+- **排版还原（Layout Reconstruction）**：在白底上按 `elements[].bbox` 绝对定位叠加出还原版面（文字 / 表格 / 公式 / 几何图），并通过 `crops[].element_index` 把 figure 裁剪图对回对应位置。
+  - **默认显示还原层**（白底 + 蓝色边框勾勒结构），原图底图默认隐藏。
+  - 勾选 **「显示原图」** 才把原图叠加到底层做对照；勾选 **「显示边框」** 控制 bbox 描边显隐。
+  - 缩放用 CSS `transform: scale`（10%~300%），不影响百分比布局基准，零重排。
+  - 详细的数据契约、坐标处理与前端渲染算法见 [`docs/layout-reconstruction-guide.md`](docs/layout-reconstruction-guide.md)。
+
+> 前端为纯静态文件，改动刷新即生效；代理主程序（`app/main.py` 等）改动需重启 8088。
 
 ---
 

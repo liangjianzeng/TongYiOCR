@@ -1,7 +1,7 @@
 # 原始排版还原（Layout Reconstruction）参考实现
 
-> 适用场景：拿到 OCR 结构化结果（文字块 + bbox + 原图）后，在页面上按原版式"还原"出带可选标注的预览。
-> 核心理念：**双图层叠加** —— 原图做底（保证版式/字体/背景真实），结构化元素做透明叠加层（只在需要时描边/高亮）。不是重绘，是标注。
+> 适用场景：拿到 OCR 结构化结果（文字块 + bbox + 原图）后，在页面上按原版式"还原"出预览。
+> 核心理念：**以结构化还原层为主** —— 默认在白底上用 bbox 绝对定位叠加出还原版面（文字/表格/公式/几何图），原图仅作为**可勾选的对照层**（勾选"显示原图"才叠到底层）。不重绘，是"还原 + 可选对照"。
 
 ---
 
@@ -101,17 +101,17 @@ for b_idx, blk in enumerate(blocks):
 
 ---
 
-## 三、前端：双图层叠加渲染（核心）
+## 三、前端：还原层渲染（核心，原图可勾选对照）
 
 ### 3.1 DOM 结构
 
 ```
 .layout-wrap
- ├─ .layout-toolbar   （缩放滑块 / 重置 / 原图状态）
- └─ .layout-view      （滚动容器，position:relative）
-     └─ .layout-page  （position:relative; inline-block，尺寸由原图自然撑开）
-         ├─ <img class="bg">      ← 原图底图（真实版式来源）
-         ├─ .layout-box (文字)     ← 绝对定位，百分比坐标
+ ├─ .layout-toolbar   （缩放滑块 / 重置 / 原图状态 / 两个勾选框）
+ └─ .layout-view      （滚动容器，position:relative，浅色背景）
+     └─ .layout-page  （position:relative; inline-block；默认白底=还原层；原图隐藏时仍由原图(visibility:hidden)或 aspect-ratio 撑开尺寸）
+         ├─ <img class="bg">      ← 原图底图（默认隐藏，勾选"显示原图"才叠加，用于对照）
+         ├─ .layout-box (文字)     ← 绝对定位，百分比坐标，默认带边框
          ├─ .layout-box (表格)
          └─ .layout-box (figure)   ← 内含 <img> 裁剪图
 ```
@@ -119,16 +119,19 @@ for b_idx, blk in enumerate(blocks):
 ### 3.2 CSS（关键几条）
 
 ```css
-.layout-view  { position:relative; overflow:auto; }          /* 滚动容器 */
-.layout-page  { position:relative; display:inline-block; }    /* 由内部 img 撑开尺寸，不写死宽高 */
-.layout-page > img.bg { display:block; min-width:200px; }     /* 原图底图；min-width 防缩成极小方块 */
+.layout-view  { position:relative; overflow:auto; background:#f5f6f8; }   /* 滚动容器，浅灰底 */
+.layout-page  { position:relative; display:inline-block; background:#fff; } /* 白底=还原层；不写死宽高 */
+.layout-page > img.bg { display:block; min-width:200px; }                 /* 原图底图 */
+/* ★ 默认隐藏原图：用 visibility 而非 display:none，既藏住原图又保住页面尺寸基准（bbox 百分比定位不会错位）；
+   勾选"显示原图"后 .layout-page 加 .show-original 类才显示原图做对照 */
+.layout-page:not(.show-original) > img.bg { visibility:hidden; }
 .layout-box  { position:absolute; overflow:hidden;
                font-size:11px; line-height:1.2; color:#111; background:transparent;
                padding:1px 2px; box-sizing:border-box;
-               /* 双色描边：白+黑 text-shadow，保证任何底图上文字都可读 */
+               /* 双色描边：白+黑 text-shadow，保证在白底还原层或原图底上都可读 */
                text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000; }
 .layout-box > img { display:block; width:100%; height:100%; object-fit:contain; border-radius:2px; }
-.layout-box.show-border { outline:1px solid rgba(58,122,254,.95); background:rgba(58,122,254,.18); } /* 可选高亮 */
+.layout-box.show-border { outline:1px solid rgba(58,122,254,.95); background:rgba(58,122,254,.18); } /* 默认开启，勾勒版面结构 */
 ```
 
 ### 3.3 渲染算法（伪代码 → 可直接抄）
@@ -137,12 +140,16 @@ for b_idx, blk in enumerate(blocks):
 function buildLayoutView(p, imgUrl) {
   const W = p.width || 1, H = p.height || 1;
 
-  // 1) 底图：原图
+  // 1) 原图底图（默认隐藏，勾选"显示原图"才叠加对照）
   const page = document.createElement('div'); page.className = 'layout-page';
   if (imgUrl) {
     const img = document.createElement('img'); img.className = 'bg'; img.src = imgUrl;
     img.onerror = () => status.textContent = '✗ 原图加载失败';
     page.appendChild(img);
+  } else {
+    // 无原图：按页面宽高比撑开还原层，保证 bbox 叠加仍有尺寸基准
+    page.style.aspectRatio = W + ' / ' + H;
+    page.style.width = '100%';
   }
 
   // 2) 预建 crop 索引（供 figure 匹配）
@@ -176,7 +183,7 @@ function buildLayoutView(p, imgUrl) {
     const [x1, y1, x2, y2] = b;
     if (x2 <= x1 || y2 <= y1) continue;        // 非法框跳过
 
-    const box = document.createElement('div'); box.className = 'layout-box';
+    const box = document.createElement('div'); box.className = 'layout-box show-border';  // 默认带边框，凸显还原结构
     box.style.left   = (x1 / W * 100) + '%';
     box.style.top    = (y1 / H * 100) + '%';
     box.style.width  = ((x2 - x1) / W * 100) + '%';
@@ -224,7 +231,8 @@ function setZoom(pct) {
 |---|---|---|
 | figure 区域显示成**小方块/空白** | 后端 `response_model` 把 `element_index`/`bbox` 字段剥掉，前端匹配不到 crop | schema 里声明这两个 `Optional` 字段 |
 | 高图被压成**细长条** | 给容器写死 `max-height`+`overflow:hidden`，把原图压扁了 | 去掉高度限制；`.layout-page` 用 `inline-block` 让 `<img>` 自然撑开；给 `bg` 设 `min-width:200px` 防过缩 |
-| 文字在深色底图上**看不清** | 纯色文字无描边 | `text-shadow` 双色描边（白+黑） |
+| 原图底图**默认不显示** / 切换时 bbox 错位 | 用 `display:none` 把原图移出布局，页面尺寸塌为 0 | 用 `visibility:hidden` 隐藏（保住尺寸基准）；无原图时按 `aspect-ratio=W/H` + `width:100%` 撑开还原层 |
+| 文字在底图上**看不清** | 纯色文字无描边 | `text-shadow` 双色描边（白+黑），白底还原层与原图底图都可读 |
 | 引擎没返回 `element_index`，图对不上 | 兜底缺失 | 用 bbox **IoU** 模糊匹配 crop（见 `findCropBbox`） |
 | 响应报文预览里**大图 base64 卡死浏览器** | 巨长单行字符串导致折行崩溃 | 预览时把 `crops[].base64` 截断显示 |
 
@@ -237,9 +245,11 @@ function setZoom(pct) {
                ├─→ 后端按 bbox 裁 crops[]（带 element_index）
 结构化 elements[] ─┘
                        ↓ 统一 JSON
-前端：原图作底 <img.bg>  +  elements[] 绝对定位百分比叠加  +  figure 用 crop 内嵌 <img>
+前端：白底还原层（elements[] 绝对定位百分比叠加，默认显示）
+      ＋ 原图底图 <img.bg>（默认隐藏，勾选"显示原图"才叠加对照）
+      ＋ figure 用 crop 内嵌 <img>
                        ↓
-             双图层排版还原（缩放 = CSS scale，零重排）
+             排版还原（缩放 = CSS scale，零重排）
 ```
 
 这套方案不依赖任何 OCR 引擎私有格式，只要上游能产出 `{width,height,elements:[{type,bbox,content,...}],crops:[{element_index,base64}]}` 就能直接套用。
