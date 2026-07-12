@@ -74,11 +74,32 @@
   /* 默认：不显示原图底图，只呈现结构化还原层（白底上的 bbox 叠加）；
      勾选"显示原图"后（.layout-page.show-original）才把原图显示出来做对照 */
   .layout-page:not(.show-original)>img.bg{visibility:hidden;}
-  .layout-box{position:absolute;overflow:hidden;font-size:11px;line-height:1.2;color:#111;background:transparent;padding:1px 2px;box-sizing:border-box;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000;}
+  .layout-box{position:absolute;overflow:hidden;font-size:11px;line-height:1.5;color:#111;background:transparent;padding:2px 4px;box-sizing:border-box;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000;min-height:1.6em;min-width:3em;}
   .layout-box>img{display:block;width:100%;height:100%;object-fit:contain;border-radius:2px;}
-.layout-box.show-border{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
-.layout-box .lt{font-weight:700;color:#1b5ec9;font-size:10px;}
+  .layout-box.show-border{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
+  .layout-box .lt{font-weight:700;color:#1b5ec9;font-size:10px;}
+  /* 表格：原样展现，白底不裁切，可横向滚动 */
+  .layout-box.table-box{overflow:auto;background:#fff;text-shadow:none;}
+  .layout-box.table-box table{border-collapse:collapse;width:100%;font-size:11px;color:#111;table-layout:fixed;}
+  .layout-box.table-box th,.layout-box.table-box td{border:1px solid #999;padding:2px 4px;word-break:break-word;}
+  /* 公式：单行不折行，避免被 bbox 宽度裁掉 */
+  .layout-box.formula-box{overflow:visible;white-space:nowrap;background:rgba(255,236,180,.25);text-shadow:none;}
+  /* 图注：清晰呈现，避免重叠时看不清 */
+  .layout-box.figure-box{overflow:visible;background:rgba(120,220,160,.18);}
 .layout-note{color:#7e8aa8;font-size:12px;padding:12px 14px;}
+
+  /* ===== 裁剪图网格视图 ===== */
+  .crops-view{margin-top:6px;}
+  .crops-head{font-size:12px;color:#9fb0d0;margin-bottom:8px;}
+  .crops-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;}
+  .crop-card{border:1px solid #2a3148;border-radius:8px;overflow:hidden;background:#11151f;display:flex;flex-direction:column;}
+  .crop-img{display:block;width:100%;height:auto;background:#fff;min-height:40px;cursor:zoom-in;}
+  .crop-img.err{display:none;}
+  .crop-cap{display:flex;gap:6px;align-items:center;padding:5px 7px;font-size:11px;color:#bcd;flex-wrap:wrap;}
+  .crop-idx{font-weight:700;color:#7aa2ff;}
+  .crop-type{background:#2a3550;color:#bcd;border-radius:10px;padding:1px 7px;}
+  .crop-dim{color:#7e8aa8;}
+  .crop-fail{padding:14px;text-align:center;color:#ff8a8a;font-size:11px;border-top:1px solid #2a3148;}
   .hidden{display:none!important;}
 </style>
 </head>
@@ -205,17 +226,21 @@ function renderPages(pages){
       <div class="view-tabs">
         <button data-v="md" class="active" onclick="switchView(this,'md')">Markdown</button>
         <button data-v="layout" onclick="switchView(this,'layout')">排版还原</button>
+        <button data-v="crops" onclick="switchView(this,'crops')">裁剪图</button>
         <label class="hint"><input type="checkbox" checked onchange="toggleBorders(this)"/> 显示边框</label>
         <label class="hint"><input type="checkbox" onchange="toggleOriginal(this)"/> 显示原图</label>
       </div>
       <div class="pview pview-md"></div>
-      <div class="pview pview-layout hidden"></div>`;
+      <div class="pview pview-layout hidden"></div>
+      <div class="pview pview-crops hidden"></div>`;
     // Markdown 视图（结构化渲染）
     const mdEl=document.createElement('div'); mdEl.className='md-render';
     mdEl.innerHTML = renderMarkdown(p.markdown||'');
     d.querySelector('.pview-md').appendChild(mdEl);
     // 排版还原视图（原图底 + bbox 叠加）
     d.querySelector('.pview-layout').appendChild(buildLayoutView(p, lastImageDataUrl));
+    // 裁剪图视图（所有识别后的原图裁切）
+    d.querySelector('.pview-crops').appendChild(buildCropsView(p));
     wrap.appendChild(d);
   }
   box.appendChild(wrap);
@@ -227,6 +252,7 @@ function switchView(btn, v){
   btn.classList.add('active');
   page.querySelector('.pview-md').classList.toggle('hidden', v!=='md');
   page.querySelector('.pview-layout').classList.toggle('hidden', v!=='layout');
+  page.querySelector('.pview-crops').classList.toggle('hidden', v!=='crops');
 }
 
 function toggleOriginal(cb){
@@ -315,6 +341,9 @@ function buildLayoutView(p, imgUrl){
     const [x1,y1,x2,y2]=b;
     if(x2<=x1||y2<=y1) continue;
     const box=document.createElement('div'); box.className='layout-box show-border';
+    if(e.type==='table') box.classList.add('table-box');
+    else if(e.type==='formula') box.classList.add('formula-box');
+    else if(e.type==='figure') box.classList.add('figure-box');
     box.style.left=(x1/W*100)+'%'; box.style.top=(y1/H*100)+'%';
     box.style.width=((x2-x1)/W*100)+'%'; box.style.height=((y2-y1)/H*100)+'%';
     if(e.type==='table' && e.html){
@@ -361,6 +390,43 @@ function buildLayoutView(p, imgUrl){
     note.textContent=imgUrl?'该引擎未返回 bbox，无法还原排版 —— 请切换 Markdown 视图。':'无坐标且无原图。';
     wrap.appendChild(note);
   }
+  return outer;
+}
+
+// 裁剪图视图：把该页所有"识别后的原图裁切"以网格形式展示，便于核对引擎到底裁出了什么
+function buildCropsView(p){
+  const crops=p.crops||[];
+  const outer=document.createElement('div'); outer.className='crops-view';
+  const head=document.createElement('div'); head.className='crops-head';
+  head.textContent = crops.length ? ('共 '+crops.length+' 张裁剪图（识别后的原图裁切，按 element 顺序排列）') : '该引擎未返回裁剪图';
+  outer.appendChild(head);
+  if(!crops.length) return outer;
+  const grid=document.createElement('div'); grid.className='crops-grid';
+  // element_index -> element 映射，用于给裁剪图标上类型
+  const elByIndex={};
+  (p.elements||[]).forEach((e,idx)=>{ elByIndex[idx]=e; });
+  crops.forEach((c,ci)=>{
+    const card=document.createElement('div'); card.className='crop-card';
+    const img=document.createElement('img'); img.className='crop-img';
+    img.loading='lazy';
+    img.alt=c.filename||('crop'+ci);
+    img.src=c.base64;
+    img.onerror=function(){ this.classList.add('err'); };
+    const dim = (c.bbox&&c.bbox.length===4) ? (Math.round(c.bbox[2]-c.bbox[0])+'×'+Math.round(c.bbox[3]-c.bbox[1])) : '';
+    let typeLabel='';
+    if(typeof c.element_index==='number' && elByIndex[c.element_index]) typeLabel=elByIndex[c.element_index].type;
+    const cap=document.createElement('div'); cap.className='crop-cap';
+    let html='<span class="crop-idx">#'+(ci+1)+'</span>';
+    if(typeLabel) html+='<span class="crop-type">'+typeLabel+'</span>';
+    if(dim) html+='<span class="crop-dim">'+dim+'px</span>';
+    cap.innerHTML=html;
+    card.appendChild(img);
+    card.appendChild(cap);
+    // 点击放大（新标签打开原图 base64）
+    img.onclick=function(){ if(!this.classList.contains('err')) window.open(this.src,'_blank'); };
+    grid.appendChild(card);
+  });
+  outer.appendChild(grid);
   return outer;
 }
 

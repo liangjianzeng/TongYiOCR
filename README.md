@@ -297,6 +297,8 @@ POST /unlimited-ocr/parse
 → 统一 OCRParseResponse（crops 由 bbox 派生）
 ```
 - 真实端点容器内为 `/v1/ocr/multi`（`enable_grounding=true` 返回 bbox）。
+- **坐标归一化**：Unlimited-OCR 返回的 bbox 是**归一化坐标（0~1000）**，与真实像素尺寸不符。后端 `_detect_and_scale_coords()` 会自动检测（任一坐标越界即判定）并缩放到像素坐标后再生成 crops，无需前端换算。若裁剪图仍错位，请检查该步是否生效。
+- **文本后处理**：引擎偶发把同一区域重复输出、或吐出原始 `\(...\)` LaTeX 与控制字符，后端 `_dedup_elements()` / `_clean_latex()` 会做去重与清洗。
 - **前置**：先起 Unlimited-OCR Docker 容器（默认映射 8090）。
 
 **PaddleOCR-VL**
@@ -350,6 +352,7 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
   - 勾选 **「显示原图」** 才把原图叠加到底层做对照；勾选 **「显示边框」** 控制 bbox 描边显隐。
   - 缩放用 CSS `transform: scale`（10%~300%），不影响百分比布局基准，零重排。
   - 详细的数据契约、坐标处理与前端渲染算法见 [`docs/layout-reconstruction-guide.md`](docs/layout-reconstruction-guide.md)。
+- **裁剪图诊断（Crops）**：每页额外提供 **「裁剪图」** tab，把 `crops[]` 中**每一张识别后从原图裁出的小图**网格陈列，并标注 `#序号` / `type` / 裁图尺寸，点击可开大图。用于快速核对"识别后的裁剪原图到底长什么样、有没有裁错 / 越界 / 空白"。这是排查坐标错位（见下）的最快手段。
 
 > 前端为纯静态文件，改动刷新即生效；代理主程序（`app/main.py` 等）改动需重启 8088。
 
