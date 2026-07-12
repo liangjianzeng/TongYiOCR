@@ -83,7 +83,19 @@
   .layout-box.table-box table{border-collapse:collapse;width:100%;font-size:11px;color:#111;table-layout:fixed;}
   .layout-box.table-box th,.layout-box.table-box td{border:1px solid #999;padding:2px 4px;word-break:break-word;}
   /* 公式：单行不折行，避免被 bbox 宽度裁掉 */
-  .layout-box.formula-box{overflow:visible;white-space:nowrap;background:rgba(255,236,180,.25);text-shadow:none;}
+  .layout-box.formula-box{overflow:visible;white-space:normal;background:rgba(255,236,180,.25);text-shadow:none;font-style:italic;}
+
+  /* ===== 离线 LaTeX 公式渲染（无外部依赖） ===== */
+  .latex{font-family:"Cambria Math","Times New Roman",Georgia,serif;font-style:italic;white-space:normal;line-height:1.4;}
+  .formula-box .formula-img{max-width:100%;height:auto;display:block;border-radius:2px;}
+  .latex .sup{font-size:.7em;vertical-align:.55em;line-height:0;}
+  .latex .sub{font-size:.7em;vertical-align:-.25em;line-height:0;}
+  .latex .frac{display:inline-flex;flex-direction:column;text-align:center;vertical-align:middle;margin:0 .15em;}
+  .latex .frac>span:first-child{border-bottom:1px solid currentColor;padding:0 .3em;line-height:1.25;}
+  .latex .frac>span:last-child{padding:0 .3em;line-height:1.25;}
+  .latex .sqrt{display:inline-flex;align-items:flex-start;}
+  .latex .sqrt>.r{border-top:1px solid currentColor;padding:0 .2em;}
+  .latex .latex-text{font-style:normal;}
   /* 图注：清晰呈现，避免重叠时看不清 */
   .layout-box.figure-box{overflow:visible;background:rgba(120,220,160,.18);}
 .layout-note{color:#7e8aa8;font-size:12px;padding:12px 14px;}
@@ -358,11 +370,26 @@ function buildLayoutView(p, imgUrl){
       } else {
         box.textContent='🖼 '+(e.caption||e.content||'');
       }
+    } else if(e.type==='formula'){
+      const lab=document.createElement('div'); lab.className='lt'; lab.textContent='[公式]';
+      const fx=document.createElement('span'); fx.className='latex';
+      const tex = e.latex || e.content || '';
+      if(tex){
+        fx.innerHTML = renderLatex(tex);
+      } else {
+        // 公式未被识别为 LaTeX：尝试展示该区域原图裁切，否则标注未识别
+        const crop = cropByIndex[ei] || findCropBbox(x1,y1,x2,y2);
+        if(crop){
+          const img=document.createElement('img'); img.src=crop; img.className='formula-img'; img.alt='公式原图';
+          fx.appendChild(img);
+        } else {
+          fx.textContent='（公式未识别）';
+        }
+      }
+      box.appendChild(lab); box.appendChild(fx);
     } else {
-      let body='';
-      if(e.type==='formula') body='⨎ '+(e.latex||e.content||'');
-      else body=e.content||'';
-      box.textContent=body;
+      // 普通文字框：渲染其中的行内 $...$ 公式（如 $\triangle ABC$）
+      box.innerHTML = renderInlineLatex(e.content||'');
     }
     page.appendChild(box); placed++;
   }
@@ -430,11 +457,120 @@ function buildCropsView(p){
   return outer;
 }
 
+// ===== 离线 LaTeX 公式渲染（无外部依赖，覆盖 OCR 常见子集）=====
+// 把 $...$ / \(...\) / \[...\] 形式的 LaTeX 渲染为 HTML（希腊字母 / 分式 / 上下标 / 根号 / 常见符号）
+const _LATEX_SYMBOLS = {
+  alpha:'α',beta:'β',gamma:'γ',delta:'δ',epsilon:'ε',varepsilon:'ε',zeta:'ζ',eta:'η',theta:'θ',vartheta:'ϑ',iota:'ι',kappa:'κ',lambda:'λ',mu:'μ',nu:'ν',xi:'ξ',pi:'π',rho:'ρ',sigma:'σ',tau:'τ',upsilon:'υ',phi:'φ',varphi:'ϕ',chi:'χ',psi:'ψ',omega:'ω',
+  Gamma:'Γ',Delta:'Δ',Theta:'Θ',Lambda:'Λ',Xi:'Ξ',Pi:'Π',Sigma:'Σ',Phi:'Φ',Psi:'Ψ',Omega:'Ω',
+  varnothing:'∅',emptyset:'∅',
+  times:'×',cdot:'·',div:'÷',pm:'±',mp:'∓',ast:'∗',star:'⋆',bullet:'∙',circ:'°',
+  leq:'≤',le:'≤',geq:'≥',ge:'≥',neq:'≠',ne:'≠',approx:'≈',equiv:'≡',sim:'∼',simeq:'≃',cong:'≅',propto:'∝',
+  infty:'∞',partial:'∂',nabla:'∇',forall:'∀',exists:'∃',neg:'¬',
+  angle:'∠',measuredangle:'∡',perp:'⊥',parallel:'∥',
+  sum:'∑',prod:'∏',coprod:'∐',int:'∫',oint:'∮',iint:'∬',iiint:'∭',
+  cup:'∪',cap:'∩',subset:'⊂',supset:'⊃',subseteq:'⊆',supseteq:'⊇',in:'∈',notin:'∉',ni:'∋',
+  rightarrow:'→',to:'→',gets:'←',leftarrow:'←',Rightarrow:'⇒',Leftarrow:'⇐',leftrightarrow:'↔',Leftrightarrow:'⇔',mapsto:'↦',uparrow:'↑',downarrow:'↓',
+  cdots:'⋯',ldots:'…',dots:'…',vdots:'⋮',ddots:'⋱',
+  quad:' ',qquad:'  ',space:' ',
+  vee:'∨',wedge:'∧',oplus:'⊕',otimes:'⊗',odot:'⊙',
+  prime:'′',degree:'°',deg:'°',
+  triangle:'△',square:'□',diamond:'◇',clubsuit:'♣',spadesuit:'♠',heartsuit:'♥',
+  lceil:'⌈',rceil:'⌉',lfloor:'⌊',rfloor:'⌋'
+};
+function _parseLatex(tex, sym, start){
+  let p = start || 0; const len = tex.length; let html = '';
+  const esc = c => c.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function readGroup(){
+    if(tex[p] !== '{'){ return readToken(); }
+    // 按括号深度截取本组字符串（含嵌套），再单独解析，避免吞掉兄弟组
+    let depth = 0, start = p + 1;
+    while(p < len){
+      const c = tex[p];
+      if(c === '{') depth++;
+      else if(c === '}'){ depth--; if(depth === 0) break; }
+      p++;
+    }
+    const inner = tex.slice(start, p);
+    if(tex[p] === '}') p++; // 消费本组闭括号
+    return { html: _parseLatex(inner, sym, 0).html };
+  }
+  function readToken(){
+    if(tex[p] === '{') return readGroup();
+    if(tex[p] === '\\'){ const r = _parseLatex(tex, sym, p); p = r.next; return {html:r.html}; }
+    const ch = tex[p];
+    if(ch === undefined || ch === '^' || ch === '_' || ch === '}' || ch === '{') return {html:''};
+    p++; return {html: esc(ch)};
+  }
+  while(p < len){
+    const c = tex[p];
+    if(c === '\\'){
+      let j = p + 1;
+      if(j < len && /[a-zA-Z]/.test(tex[j])){
+        let name = ''; while(j < len && /[a-zA-Z]/.test(tex[j])){ name += tex[j]; j++; }
+        p = j;
+        if(name === 'frac' || name === 'dfrac' || name === 'tfrac'){
+          const a = readGroup(), b = readGroup();
+          html += '<span class="frac"><span>'+a.html+'</span><span>'+b.html+'</span></span>';
+        } else if(name === 'sqrt'){
+          let idx = '';
+          if(tex[p] === '['){ let k = p + 1; while(k < len && tex[k] !== ']'){ k++; } idx = tex.slice(p + 1, k); p = k + 1; }
+          const a = readGroup();
+          html += '<span class="sqrt">√<span class="r">'+(idx ? '<span class="sup">'+esc(idx)+'</span>' : '')+a.html+'</span></span>';
+        } else if(['text','mathrm','mathbf','mathit','mathbb','mathsf','mbox'].includes(name)){
+          const a = readGroup(); html += '<span class="latex-text">'+a.html+'</span>';
+        } else if(sym[name] !== undefined){
+          html += sym[name];
+        } // 未知命令（\left \right \begin 等）跳过
+      } else {
+        const ch = tex[p + 1];
+        if(ch === ' ' || ch === ',' || ch === ';' || ch === ':'){ /* 间距，忽略 */ }
+        else if(ch === '\\'){ /* 换行，忽略 */ }
+        else if(ch){ html += esc(ch); }
+        p += (ch ? 2 : 1);
+      }
+    } else if(c === '{'){
+      const g = readGroup(); html += g.html;
+    } else if(c === '^'){
+      p++; const t = readToken(); html += '<span class="sup">'+t.html+'</span>';
+    } else if(c === '_'){
+      p++; const t = readToken(); html += '<span class="sub">'+t.html+'</span>';
+    } else if(c === '}'){ p++; break;
+    } else { html += esc(c); p++; }
+  }
+  return {html, next:p};
+}
+function renderLatex(tex){
+  if(tex == null) return '';
+  tex = String(tex).replace(/^\s*[\$]+/, '').replace(/[\$]+\s*$/, '').trim();
+  if(!tex) return '';
+  try { return _parseLatex(tex, _LATEX_SYMBOLS, 0).html || ''; }
+  catch(e){ return String(tex); }
+}
+
+// 行内公式渲染：把文本中的 $...$ / $$...$$ 替换为渲染后的数学样式，
+// 非公式部分保持原样（仅做 HTML 转义）。仅用于「排版还原」视图。
+function renderInlineLatex(text){
+  if(!text) return '';
+  const esc = c => c.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let html = '';
+  const re = /\$\$([\s\S]+?)\$\$|\$([^\$\n]+?)\$/g;
+  let last = 0, m;
+  while((m = re.exec(text))){
+    if(m.index > last) html += esc(text.slice(last, m.index));
+    const tex = (m[1] != null ? m[1] : m[2]).trim();
+    if(tex) html += '<span class="latex">' + renderLatex(tex) + '</span>';
+    last = re.lastIndex;
+  }
+  if(last < text.length) html += esc(text.slice(last));
+  return html || esc(text);
+}
+
 // ===== 轻量 Markdown → HTML（离线、无外部依赖）=====
 function renderMarkdown(md){
   if(!md) return '';
   const esc = s => s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   const inline = s => {
+    // Markdown 视图只做轻量文本格式化，不渲染公式（公式渲染在「排版还原」视图内完成）
     s = esc(s);
     s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (m,a,u)=>`<img alt="${a}" src="${u}"/>`);
     s = s.replace(/\[([^\]]+)\]\(([^)\s]+)\)/g, (m,t,u)=>`<a href="${u}" target="_blank" rel="noopener">${t}</a>`);

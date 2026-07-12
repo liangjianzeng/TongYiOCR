@@ -346,8 +346,8 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
 
 - **引擎下拉按健康过滤**：下拉只列出健康检查（`/xxx/health`）确认可用的引擎；不可用的自动隐藏。需先确认对应引擎已启动（见上文部署）。
 - **实时请求日志**：通过 SSE 流（`GET /logs/stream`）实时展示代理收到的请求（时间、方法、路径、状态码、耗时、来源 IP）；时间为**北京时间（UTC+8）**；支持暂停 / 清空 / 自动滚动。
-- **Markdown 结构化预览**：解析返回的 Markdown 做轻量结构化渲染（标题 / 列表 / 表格 / 代码块），纵向滚动、按内容换行；响应报文预览中的大图 base64 会自动截断显示，避免浏览器卡死。
-- **排版还原（Layout Reconstruction）**：在白底上按 `elements[].bbox` 绝对定位叠加出还原版面（文字 / 表格 / 公式 / 几何图），并通过 `crops[].element_index` 把 figure 裁剪图对回对应位置。
+- **Markdown 结构化预览**：解析返回的 Markdown 做轻量结构化渲染（标题 / 列表 / 表格 / 代码块），纵向滚动、按内容换行；响应报文预览中的大图 base64 会自动截断显示，避免浏览器卡死。**公式在 Markdown 视图以原始 `$...$` 源码显示**（数学样式渲染见「排版还原」视图），以忠实呈现引擎返回的文本。
+- **排版还原（Layout Reconstruction）**：在白底上按 `elements[].bbox` 绝对定位叠加出还原版面（文字 / 表格 / **公式** / 几何图），并通过 `crops[].element_index` 把 figure 裁剪图对回对应位置。公式渲染分两类：① 段落 / 标题 / 选项等**文字框内嵌的行内 `$...$` / `$$...$$` 公式**（Unlimited-OCR 真实返回的主要形态，LaTeX 字段为 `null`、公式直接写进 `content`）会被 `renderInlineLatex()` 就地渲染为数学样式；② 独立的 `formula` 类型元素（如 PaddleOCR-VL 返回）走 `renderLatex()` 渲染其 `latex`/`content`，若二者皆空则回退显示该区域原图裁切或标注「（公式未识别）」。所有公式渲染均为**纯前端离线 LaTeX 子集**（无 MathJax/KaTeX、无网络请求）。
   - **默认显示还原层**（白底 + 蓝色边框勾勒结构），原图底图默认隐藏。
   - 勾选 **「显示原图」** 才把原图叠加到底层做对照；勾选 **「显示边框」** 控制 bbox 描边显隐。
   - 缩放用 CSS `transform: scale`（10%~300%），不影响百分比布局基准，零重排。
