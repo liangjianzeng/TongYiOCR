@@ -42,6 +42,7 @@ class OCRPage(BaseModel):
     markdown: str = Field("", description="完整 Markdown 文本")
     elements: List[OCRElement] = Field(default_factory=list, description="结构化元素列表")
     crops: List[OCRCrop] = Field(default_factory=list, description="裁剪图列表（base64）")
+    page_image: Optional[str] = Field(None, description="该页原图 base64（PDF 上传时内联，供排版还原背景；超页数限制时为空）")
 
 
 class OCRParseResponse(BaseModel):

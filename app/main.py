@@ -23,7 +23,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, Request, HTTPException
+from fastapi import FastAPI, APIRouter, Request, HTTPException, File, UploadFile, Form
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,6 +34,7 @@ from . import glmocr_client
 from . import unlimited_ocr_client
 from . import paddleocr_vl_client
 from . import task_queue
+from . import pdf_utils
 from .schemas import (
     GlmOcrParseRequest, UnlimitedOcrRequest, PaddleOcrVlRequest,
     OCRParseResponse,
@@ -135,6 +136,19 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
 app.add_middleware(AccessLogMiddleware)
 
 
+# ===================== PDF 上传解析（PDF → 图片 → 引擎） =====================
+def _attach_page_images(result: dict, bg_images: list) -> dict:
+    """把每页背景图（bg_images，按页顺序）挂到引擎返回的 pages[].page_image，
+    供前端「排版还原」叠加原图背景；bg_images 为空（页数超限）时不挂。"""
+    if not bg_images:
+        return result
+    for p in (result.get("pages") or []):
+        idx = (int(p.get("page") or 1)) - 1
+        if 0 <= idx < len(bg_images) and bg_images[idx]:
+            p["page_image"] = bg_images[idx]
+    return result
+
+
 # ===================== GLM-OCR 子服务 =====================
 glmocr_router = APIRouter(prefix="/glmocr", tags=["GLM-OCR"])
 
@@ -173,6 +187,37 @@ def glmocr_parse(req: GlmOcrParseRequest):
         return JSONResponse(status_code=500, content={"ok": False, "error": f"解析异常: {e}"})
 
 
+@glmocr_router.post("/parse_pdf", response_model=OCRParseResponse)
+async def glmocr_parse_pdf(
+    file: UploadFile = File(...),
+    doc_id: str = Form("pdf"),
+    llama_port: int = Form(None),
+):
+    """PDF 上传 → 每页转图 → GLM-OCR 解析，返回统一 pages[]。"""
+    if not config.GLM_OCR_ENABLED:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "GLM-OCR 未启用"})
+    if not glmocr_client.glmocr_available():
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"glmocr SDK 未安装: {glmocr_client._GLMOCR_IMPORT_ERR}"})
+    data = await file.read()
+    try:
+        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    if not ocr_images:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "PDF 无可用页面"})
+    try:
+        result = glmocr_client.parse(
+            images=ocr_images,
+            doc_id=doc_id,
+            llama_host=None,
+            llama_port=llama_port,
+        )
+        _attach_page_images(result, bg_images)
+        return result
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500, content={"ok": False, "error": f"解析异常: {e}"})
+
+
 # ===================== Unlimited-OCR 子服务 =====================
 unlimited_router = APIRouter(prefix="/unlimited-ocr", tags=["Unlimited-OCR"])
 
@@ -191,6 +236,29 @@ def unlimited_parse(req: UnlimitedOcrRequest):
     result = unlimited_ocr_client.parse(images=req.images, prompt=req.prompt, doc_id=req.doc_id)
     if not result.get("ok"):
         return JSONResponse(status_code=502, content=result)
+    return result
+
+
+@unlimited_router.post("/parse_pdf", response_model=OCRParseResponse)
+async def unlimited_parse_pdf(
+    file: UploadFile = File(...),
+    doc_id: str = Form("pdf"),
+    prompt: str = Form("请准确识别图片中的所有文字，保持原始排版"),
+):
+    """PDF 上传 → 每页转图 → Unlimited-OCR 解析，返回统一 pages[]。"""
+    if not config.UNLIMITED_OCR_ENABLED:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "Unlimited-OCR 未启用"})
+    data = await file.read()
+    try:
+        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    if not ocr_images:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "PDF 无可用页面"})
+    result = unlimited_ocr_client.parse(images=ocr_images, prompt=prompt, doc_id=doc_id)
+    if not result.get("ok"):
+        return JSONResponse(status_code=502, content=result)
+    _attach_page_images(result, bg_images)
     return result
 
 
@@ -227,6 +295,40 @@ def paddle_parse(req: PaddleOcrVlRequest):
     return result
 
 
+@paddle_router.post("/parse_pdf", response_model=OCRParseResponse)
+async def paddle_parse_pdf(
+    file: UploadFile = File(...),
+    doc_id: str = Form("pdf"),
+    task_type: str = Form("general"),
+    language: str = Form("ch"),
+):
+    """PDF 上传 → 每页转图 → PaddleOCR-VL 解析，返回统一 pages[]。"""
+    if not config.PADDLEOCR_VL_ENABLED:
+        return JSONResponse(status_code=503, content={"ok": False, "error": "PaddleOCR-VL 未启用"})
+    data = await file.read()
+    try:
+        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    if not ocr_images:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "PDF 无可用页面"})
+    img_objs = [{"page": i + 1, "image_data": b64} for i, b64 in enumerate(ocr_images)]
+    result = paddleocr_vl_client.parse(
+        images=img_objs,
+        task_type=task_type,
+        language=language,
+        doc_id=doc_id,
+    )
+    if not result.get("ok"):
+        return JSONResponse(status_code=502, content=result)
+    for p in (result.get("pages") or []):
+        tb = p.pop("text_blocks", None)
+        if tb is not None and "elements" not in p:
+            p["elements"] = tb
+    _attach_page_images(result, bg_images)
+    return result
+
+
 # ===================== 任务队列 =====================
 @app.post("/task/submit", response_model=TaskSubmitResponse)
 def task_submit(req: TaskSubmitRequest):
@@ -239,6 +341,40 @@ def task_submit(req: TaskSubmitRequest):
             prompt=req.prompt,
             task_type=req.task_type,
             language=req.language,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+
+
+@app.post("/task/submit_pdf", response_model=TaskSubmitResponse)
+async def task_submit_pdf(
+    file: UploadFile = File(...),
+    engine: str = Form(...),
+    doc_id: str = Form("pdf"),
+    llama_port: int = Form(None),
+    prompt: str = Form(None),
+    task_type: str = Form(None),
+    language: str = Form(None),
+):
+    """PDF 上传 → 每页转图 → 作为多页任务提交到队列（与 /task/submit 等价，但入参为 PDF 文件）。"""
+    if engine not in ("glmocr", "unlimited-ocr", "paddleocr-vl"):
+        raise HTTPException(status_code=400, detail=f"不支持的引擎: {engine}")
+    data = await file.read()
+    try:
+        ocr_images, _ = pdf_utils.pdf_bytes_to_images(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    if not ocr_images:
+        return JSONResponse(status_code=400, content={"ok": False, "error": "PDF 无可用页面"})
+    try:
+        return task_queue.submit_task(
+            engine=engine,
+            images=ocr_images,
+            doc_id=doc_id,
+            llama_port=llama_port,
+            prompt=prompt,
+            task_type=task_type,
+            language=language,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=429, detail=str(e))

@@ -128,7 +128,7 @@
   <div class="card">
     <h3>解析（选图 → 选择引擎 → 同步 / 任务队列）</h3>
     <div class="row">
-      <input type="file" id="imgFile" accept="image/*"/>
+      <input type="file" id="imgFile" accept="image/*,.pdf"/>
       <label>引擎
         <select id="engine">
           <option value="glmocr">GLM-OCR</option>
@@ -140,7 +140,7 @@
       <button id="btnSync" onclick="doParse()">同步解析</button>
       <button class="sec" id="btnTask" onclick="doTask()">提交任务</button>
     </div>
-    <div class="hint">同步解析直接返回结果；提交任务走 /task/* 队列，可并发排队、轮询进度。</div>
+    <div class="hint">同步解析直接返回结果；提交任务走 /task/* 队列，可并发排队、轮询进度。支持上传 PDF（自动逐页转图后再解析）。</div>
     <div class="taskbar" id="taskbar"></div>
     <div class="progress" id="taskprog"><div></div></div>
     <pre id="out">（结果）</pre>
@@ -249,8 +249,8 @@ function renderPages(pages){
     const mdEl=document.createElement('div'); mdEl.className='md-render';
     mdEl.innerHTML = renderMarkdown(p.markdown||'');
     d.querySelector('.pview-md').appendChild(mdEl);
-    // 排版还原视图（原图底 + bbox 叠加）
-    d.querySelector('.pview-layout').appendChild(buildLayoutView(p, lastImageDataUrl));
+    // 排版还原视图（原图底 + bbox 叠加）；PDF 每页用各自的 page_image 作背景
+    d.querySelector('.pview-layout').appendChild(buildLayoutView(p, p.page_image || lastImageDataUrl));
     // 裁剪图视图（所有识别后的原图裁切）
     d.querySelector('.pview-crops').appendChild(buildCropsView(p));
     wrap.appendChild(d);
@@ -625,18 +625,33 @@ function renderMarkdown(md){
 }
 
 async function doParse(){
-  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
-  const b64=await fileToB64(f);
-  lastImageDataUrl = b64;
+  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片或PDF');return;}
   const eng=$('#engine').value;
-  let body;
-  if(eng==='glmocr') body={images:[b64], doc_id:$('#docId').value};
-  else if(eng==='unlimited-ocr') body={images:[b64], doc_id:$('#docId').value, prompt:'请准确识别图片中的所有文字，保持原始排版'};
-  else body={images:[{page:1,image_data:b64}], task_type:'general', language:'ch', doc_id:$('#docId').value};
+  const isPdf=(f.type==='application/pdf')||/\.pdf$/i.test(f.name);
   $('#out').textContent='请求中…'; renderPages([]);
   try{
-    const r=await fetch('/'+eng+'/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
-    const j=await r.json();
+    let j;
+    if(isPdf){
+      // PDF：走 /<eng>/parse_pdf（后端 PDF → 每页图片 → 引擎解析）
+      const fd=new FormData();
+      fd.append('file', f);
+      fd.append('doc_id', $('#docId').value);
+      if(eng==='unlimited-ocr') fd.append('prompt','请准确识别图片中的所有文字，保持原始排版');
+      if(eng==='paddleocr-vl'){ fd.append('task_type','general'); fd.append('language','ch'); }
+      $('#out').textContent='PDF 转图 + 解析中…';
+      const r=await fetch('/'+eng+'/parse_pdf',{method:'POST',body:fd});
+      j=await r.json();
+      lastImageDataUrl=null;   // 多页 PDF 用每页 page_image 作背景
+    } else {
+      const b64=await fileToB64(f);
+      lastImageDataUrl=b64;
+      let body;
+      if(eng==='glmocr') body={images:[b64], doc_id:$('#docId').value};
+      else if(eng==='unlimited-ocr') body={images:[b64], doc_id:$('#docId').value, prompt:'请准确识别图片中的所有文字，保持原始排版'};
+      else body={images:[{page:1,image_data:b64}], task_type:'general', language:'ch', doc_id:$('#docId').value};
+      const r=await fetch('/'+eng+'/parse',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+      j=await r.json();
+    }
     $('#out').textContent=previewJson(j);
     renderPages(j.pages);
   }catch(e){ $('#out').textContent='错误: '+e; }
@@ -644,16 +659,32 @@ async function doParse(){
 
 let _pollTimer=null;
 async function doTask(){
-  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片');return;}
-  const b64=await fileToB64(f);
-  lastImageDataUrl = b64;
+  const f=$('#imgFile').files[0]; if(!f){alert('请选择图片或PDF');return;}
   const eng=$('#engine').value;
-  const body={engine:eng, images:[b64], doc_id:$('#docId').value};
-  if(eng==='unlimited-ocr') body.prompt='请准确识别图片中的所有文字，保持原始排版';
-  if(eng==='paddleocr-vl'){body.task_type='general';body.language='ch';}
+  const isPdf=(f.type==='application/pdf')||/\.pdf$/i.test(f.name);
+  let url='/task/submit', useForm=false, body=null, fd=null;
+  if(isPdf){
+    fd=new FormData();
+    fd.append('file', f);
+    fd.append('engine', eng);
+    fd.append('doc_id', $('#docId').value);
+    if(eng==='unlimited-ocr') fd.append('prompt','请准确识别图片中的所有文字，保持原始排版');
+    if(eng==='paddleocr-vl'){ fd.append('task_type','general'); fd.append('language','ch'); }
+    useForm=true; url='/task/submit_pdf';
+    lastImageDataUrl=null;
+  } else {
+    const b64=await fileToB64(f);
+    lastImageDataUrl=b64;
+    body={engine:eng, images:[b64], doc_id:$('#docId').value};
+    if(eng==='unlimited-ocr') body.prompt='请准确识别图片中的所有文字，保持原始排版';
+    if(eng==='paddleocr-vl'){body.task_type='general';body.language='ch';}
+  }
   $('#taskbar').textContent='提交中…';
   try{
-    const r=await fetch('/task/submit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const init={method:'POST'};
+    if(useForm) init.body=fd;
+    else { init.headers={'Content-Type':'application/json'}; init.body=JSON.stringify(body); }
+    const r=await fetch(url, init);
     const j=await r.json();
     if(!j.task_id){ $('#taskbar').textContent='提交失败: '+JSON.stringify(j); return; }
     $('#taskbar').textContent=`task_id=${j.task_id} status=${j.status} position=${j.position} est=${j.estimated_wait_seconds}s`;
