@@ -117,6 +117,17 @@ async def _process_task(task: Dict[str, Any]) -> None:
                 "total_pages": total,
                 "page_errors": page_errors,
             }
+            # PDF 任务：把 file_id / 背景图 URL 模板挂到结果，供前端懒加载排版还原背景
+            if task.get("pdf_file_id"):
+                res = st["result"]
+                res["pdf_file_id"] = task["pdf_file_id"]
+                res["pdf_page_url_template"] = task.get("pdf_page_url_template")
+                for p in pages:
+                    pg = int(p.get("page") or 0)
+                    if pg > 0 and task.get("pdf_page_url_template"):
+                        p["page_image_url"] = task["pdf_page_url_template"].replace(
+                            "{page}", str(pg)
+                        )
         except Exception as e:  # noqa: BLE001
             # 仅当循环本身（非单页）崩溃才整批失败
             st["status"] = "failed"
@@ -142,7 +153,8 @@ def start_worker() -> None:
 
 
 def submit_task(engine: str, images: list, doc_id: str = "", llama_port=None,
-                prompt=None, task_type=None, language=None) -> Dict[str, Any]:
+                prompt=None, task_type=None, language=None,
+                pdf_file_id: str = None, pdf_page_url_template: str = None) -> Dict[str, Any]:
     """提交任务，返回 {task_id, status, position, estimated_wait_seconds}。"""
     if task_queue.full():
         raise RuntimeError(f"队列已满（最大 {config.MAX_QUEUE_SIZE}）")
@@ -171,6 +183,8 @@ def submit_task(engine: str, images: list, doc_id: str = "", llama_port=None,
         "prompt": prompt,
         "task_type": task_type,
         "language": language,
+        "pdf_file_id": pdf_file_id,
+        "pdf_page_url_template": pdf_page_url_template,
     }
     task_queue.put_nowait(task)
     position = _position_of(task_id)
@@ -222,6 +236,8 @@ def get_result(task_id: str) -> Optional[Dict[str, Any]]:
         "pages": res.get("pages", []),
         "total_pages": res.get("total_pages"),
         "page_errors": res.get("page_errors", {}),
+        "pdf_file_id": res.get("pdf_file_id"),
+        "pdf_page_url_template": res.get("pdf_page_url_template"),
         "completed_at": st.get("completed_at"),
         "error": None,
     }

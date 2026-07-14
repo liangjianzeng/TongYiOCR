@@ -17,7 +17,7 @@ English: TongYiOCR is a unified, stateless OCR gateway that routes requests to m
 - **统一输出结构**：`pages[{page, width, height, markdown, elements[], crops[]}]`，`bbox` 均为**像素坐标**（基于原图尺寸），调用方无需再做归一化换算。
 - **异步任务队列**：显存只够同时跑一个引擎时，提供串行单 worker + 引擎互斥锁的排队方案，支持进度查询 / 取消 / 单页降级。
 - **可插拔引擎**：新增引擎只需实现一个 `*_client.py` 并接入配置，对外契约不变。
-- **内置测试台**：访问 `/` 即可打开可视化测试页，支持：实时请求日志（SSE 流）、按健康状态自动过滤的引擎下拉、Markdown 结构化预览、**排版还原**（白底上按 bbox 叠加还原版面，原图可勾选对照）。
+- **内置测试台**：访问 `/` 即可打开可视化测试页，支持：实时请求日志（SSE 流）、按健康状态自动过滤的引擎下拉、Markdown 结构化预览、**连续文档排版还原**（多页纵向堆叠、文档级缩放、懒加载背景，支持 ≥200 页 PDF）。
 
 ---
 
@@ -265,8 +265,9 @@ docker compose up -d
 | `/paddleocr-vl/health` | GET | PaddleOCR-VL 容器状态 | Docker 8091 |
 | `/paddleocr-vl/parse` | POST | 图片 + task_type/language → 统一输出 | Docker 8091 |
 | `/task/submit` | POST | 提交异步任务（返回 task_id） | — |
-| `*/parse_pdf` | POST | PDF 文件（multipart）→ 逐页转图 → 引擎解析，返回统一输出 | 对应引擎 |
-| `/task/submit_pdf` | POST | PDF 文件（multipart）→ 逐页转图后作为多页任务提交队列 | — |
+| `*/parse_pdf` | POST | PDF 文件（multipart）→ 落盘存储 → 逐页转图 → 引擎解析，返回统一输出（含 `pdf_file_id`/`page_image_url`） | 对应引擎 |
+| `/task/submit_pdf` | POST | PDF 文件（multipart）→ 落盘存储 → 逐页转图后作为多页任务提交队列 | — |
+| `/pdf_page/{file_id}/{page}` | GET | 按 file_id + 页码（1 起）懒加载某页背景 PNG（带磁盘缓存 + 浏览器缓存），供前端排版还原叠加 | — |
 | `/task/{id}/status` | GET | 查询状态 / 进度 | — |
 | `/task/{id}/result` | GET | 获取结果（completed/failed 才可用） | — |
 | `/task/{id}/cancel` | POST | 取消任务 | — |
@@ -347,7 +348,8 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
 代理根路径 `/` 提供一个零依赖的可视化测试页（`static/index.html`），用于快速试解析与验证还原效果。主要功能：
 
 - **引擎下拉按健康过滤**：下拉只列出健康检查（`/xxx/health`）确认可用的引擎；不可用的自动隐藏。需先确认对应引擎已启动（见上文部署）。
-- **PDF 上传**：文件选择支持图片与 PDF（`.pdf`）。选 PDF 时，后端用 pymupdf 把每页转成图片（OCR 用 200 DPI、背景用 110 DPI），再逐页送引擎解析；「同步解析」走 `*/parse_pdf`、「提交任务」走 `/task/submit_pdf`。多页 PDF 每页各自带 `page_image` 作为「排版还原」背景（超过 20 页则不内联背景图以控制报文体积，退回仅还原层）。
+- **PDF 上传（支持 ≥200 页）**：文件选择支持图片与 PDF（`.pdf`）。选 PDF 时，后端用 pymupdf 把每页转成图片（OCR 用 200 DPI）并**落盘存储**（上限 500 页），再逐页送引擎解析；「同步解析」走 `*/parse_pdf`、「提交任务」走 `/task/submit_pdf`。**背景图改为懒加载**：每页不再内联 base64，而是返回 `page_image_url`（`/pdf_page/{file_id}/{page}`，带磁盘缓存），前端用 `IntersectionObserver` 仅在滚动到附近时才加载该页背景并构建 bbox 叠加——因此几百页也不会撑爆响应报文或卡死浏览器。
+- **连续文档视图**：解析结果按「文件对象」渲染，不再是逐页卡片。排版还原视图把多页**纵向连续堆叠**（像 PDF 阅读器），顶部统一三个 tab（整篇 Markdown / 连续排版还原 / 裁剪图），并提供**文档级缩放（40%~250%）**、全局「显示原图 / 显示边框」开关；背景图与元素叠加均懒加载，轻松浏览长文档。
 - **实时请求日志**：通过 SSE 流（`GET /logs/stream`）实时展示代理收到的请求（时间、方法、路径、状态码、耗时、来源 IP）；时间为**北京时间（UTC+8）**；支持暂停 / 清空 / 自动滚动。
 - **Markdown 结构化预览**：解析返回的 Markdown 做轻量结构化渲染（标题 / 列表 / 表格 / 代码块），纵向滚动、按内容换行；响应报文预览中的大图 base64 会自动截断显示，避免浏览器卡死。**公式在 Markdown 视图以原始 `$...$` 源码显示**（数学样式渲染见「排版还原」视图），以忠实呈现引擎返回的文本。
 - **排版还原（Layout Reconstruction）**：在白底上按 `elements[].bbox` 绝对定位叠加出还原版面（文字 / 表格 / **公式** / 几何图），并通过 `crops[].element_index` 把 figure 裁剪图对回对应位置。公式渲染分两类：① 段落 / 标题 / 选项等**文字框内嵌的行内 `$...$` / `$$...$$` 公式**（Unlimited-OCR 真实返回的主要形态，LaTeX 字段为 `null`、公式直接写进 `content`）会被 `renderInlineLatex()` 就地渲染为数学样式；② 独立的 `formula` 类型元素（如 PaddleOCR-VL 返回）走 `renderLatex()` 渲染其 `latex`/`content`，若二者皆空则回退显示该区域原图裁切或标注「（公式未识别）」。所有公式渲染均为**纯前端离线 LaTeX 子集**（无 MathJax/KaTeX、无网络请求）。

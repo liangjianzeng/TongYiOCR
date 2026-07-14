@@ -16,6 +16,7 @@
   /task/queue/info   GET  队列概览
 """
 import os
+import re
 import json
 import asyncio
 import collections
@@ -23,7 +24,7 @@ import threading
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, APIRouter, Request, HTTPException, File, UploadFile, Form
+from fastapi import FastAPI, APIRouter, Request, HTTPException, File, UploadFile, Form, Response
 from fastapi.responses import HTMLResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
@@ -137,15 +138,23 @@ app.add_middleware(AccessLogMiddleware)
 
 
 # ===================== PDF 上传解析（PDF → 图片 → 引擎） =====================
-def _attach_page_images(result: dict, bg_images: list) -> dict:
-    """把每页背景图（bg_images，按页顺序）挂到引擎返回的 pages[].page_image，
-    供前端「排版还原」叠加原图背景；bg_images 为空（页数超限）时不挂。"""
-    if not bg_images:
+def _attach_pdf_meta(result: dict, file_id: str) -> dict:
+    """给 PDF 解析结果挂上「逐页懒加载背景图」所需元数据：
+
+    - 顶层 pdf_file_id / pdf_page_url_template（前端可据此拼出任意页 URL）
+    - 每页 pages[].page_image_url = /pdf_page/{file_id}/{page}?dpi=...
+
+    背景图不再内联（避免几百页 base64 撑爆响应），改由前端的 /pdf_page 懒加载。
+    """
+    if not file_id:
         return result
+    tpl = f"/pdf_page/{file_id}/{{page}}?dpi={pdf_utils.PDF_BG_DPI}"
+    result["pdf_file_id"] = file_id
+    result["pdf_page_url_template"] = tpl
     for p in (result.get("pages") or []):
-        idx = (int(p.get("page") or 1)) - 1
-        if 0 <= idx < len(bg_images) and bg_images[idx]:
-            p["page_image"] = bg_images[idx]
+        pg = int(p.get("page") or 0)
+        if pg > 0:
+            p["page_image_url"] = f"/pdf_page/{file_id}/{pg}?dpi={pdf_utils.PDF_BG_DPI}"
     return result
 
 
@@ -200,7 +209,11 @@ async def glmocr_parse_pdf(
         return JSONResponse(status_code=500, content={"ok": False, "error": f"glmocr SDK 未安装: {glmocr_client._GLMOCR_IMPORT_ERR}"})
     data = await file.read()
     try:
-        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+        file_id = pdf_utils.store_pdf(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    try:
+        ocr_images = pdf_utils.pdf_bytes_to_images(data)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
     if not ocr_images:
@@ -212,7 +225,7 @@ async def glmocr_parse_pdf(
             llama_host=None,
             llama_port=llama_port,
         )
-        _attach_page_images(result, bg_images)
+        _attach_pdf_meta(result, file_id)
         return result
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"ok": False, "error": f"解析异常: {e}"})
@@ -250,7 +263,11 @@ async def unlimited_parse_pdf(
         return JSONResponse(status_code=503, content={"ok": False, "error": "Unlimited-OCR 未启用"})
     data = await file.read()
     try:
-        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+        file_id = pdf_utils.store_pdf(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    try:
+        ocr_images = pdf_utils.pdf_bytes_to_images(data)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
     if not ocr_images:
@@ -258,7 +275,7 @@ async def unlimited_parse_pdf(
     result = unlimited_ocr_client.parse(images=ocr_images, prompt=prompt, doc_id=doc_id)
     if not result.get("ok"):
         return JSONResponse(status_code=502, content=result)
-    _attach_page_images(result, bg_images)
+    _attach_pdf_meta(result, file_id)
     return result
 
 
@@ -307,7 +324,11 @@ async def paddle_parse_pdf(
         return JSONResponse(status_code=503, content={"ok": False, "error": "PaddleOCR-VL 未启用"})
     data = await file.read()
     try:
-        ocr_images, bg_images = pdf_utils.pdf_bytes_to_images(data)
+        file_id = pdf_utils.store_pdf(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    try:
+        ocr_images = pdf_utils.pdf_bytes_to_images(data)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
     if not ocr_images:
@@ -325,8 +346,32 @@ async def paddle_parse_pdf(
         tb = p.pop("text_blocks", None)
         if tb is not None and "elements" not in p:
             p["elements"] = tb
-    _attach_page_images(result, bg_images)
+    _attach_pdf_meta(result, file_id)
     return result
+
+
+# ===================== PDF 单页懒加载（背景图） =====================
+@app.get("/pdf_page/{file_id}/{page}")
+async def pdf_page(file_id: str, page: int, dpi: int = pdf_utils.PDF_BG_DPI):
+    """按 file_id + 页码（1 起）懒加载某一页的背景 PNG，供前端「排版还原」叠加。
+
+    带磁盘缓存（pdf_utils.render_page_png）与浏览器缓存头，重复请求不重复渲染。
+    """
+    if not re.match(r"^[A-Za-z0-9]{8,64}$", file_id):
+        raise HTTPException(status_code=400, detail="非法 file_id")
+    if page < 1:
+        raise HTTPException(status_code=400, detail="非法页码")
+    try:
+        png = pdf_utils.render_page_png(file_id, page, dpi)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(status_code=500, detail=f"渲染失败: {e}")
+    if png is None:
+        raise HTTPException(status_code=404, detail="页面不存在")
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
 
 
 # ===================== 任务队列 =====================
@@ -361,11 +406,16 @@ async def task_submit_pdf(
         raise HTTPException(status_code=400, detail=f"不支持的引擎: {engine}")
     data = await file.read()
     try:
-        ocr_images, _ = pdf_utils.pdf_bytes_to_images(data)
+        file_id = pdf_utils.store_pdf(data)
+    except Exception as e:
+        return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
+    try:
+        ocr_images = pdf_utils.pdf_bytes_to_images(data)
     except Exception as e:
         return JSONResponse(status_code=400, content={"ok": False, "error": f"PDF 转换失败: {e}"})
     if not ocr_images:
         return JSONResponse(status_code=400, content={"ok": False, "error": "PDF 无可用页面"})
+    pdf_page_url_template = f"/pdf_page/{file_id}/{{page}}?dpi={pdf_utils.PDF_BG_DPI}"
     try:
         return task_queue.submit_task(
             engine=engine,
@@ -375,6 +425,8 @@ async def task_submit_pdf(
             prompt=prompt,
             task_type=task_type,
             language=language,
+            pdf_file_id=file_id,
+            pdf_page_url_template=pdf_page_url_template,
         )
     except RuntimeError as e:
         raise HTTPException(status_code=429, detail=str(e))

@@ -113,6 +113,23 @@
   .crop-dim{color:#7e8aa8;}
   .crop-fail{padding:14px;text-align:center;color:#ff8a8a;font-size:11px;border-top:1px solid #2a3148;}
   .hidden{display:none!important;}
+  /* ===== 连续文档视图（多页纵向堆叠，像 PDF 阅读器） ===== */
+  .doc{margin-top:10px;}
+  .doc-bar{display:flex;gap:12px;align-items:center;flex-wrap:wrap;margin-bottom:8px;}
+  .doc-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap;}
+  .doc-tools.hidden{display:none;}
+  .doc-md{max-height:62vh;overflow:auto;}
+  .doc-md .md-page-sep{font-size:12px;color:#3a7afe;font-weight:600;margin:.5em 0 .2em;border-top:1px dashed #ddd;padding-top:.4em;}
+  .doc-layout{background:#f5f6f8;border:2px solid #3a7afe;border-radius:10px;overflow:auto;max-height:80vh;padding:16px;}
+  .doc-layout-inner{--base-w:720px;--zoom:1;display:flex;flex-direction:column;align-items:center;gap:20px;}
+  .doc-page{position:relative;background:#fff;box-shadow:0 1px 8px rgba(0,0,0,.18);border-radius:4px;overflow:hidden;width:calc(var(--base-w) * var(--zoom));}
+  .doc-page>img.bg{display:block;width:100%;height:auto;min-width:200px;}
+  .doc-layout:not(.show-original) .doc-page>img.bg{visibility:hidden;}
+  .doc-page-label{position:absolute;top:6px;right:8px;font-size:10px;color:#666;background:rgba(255,255,255,.78);padding:1px 7px;border-radius:9px;z-index:6;pointer-events:none;}
+  .doc-layout.show-borders .layout-box{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
+  .doc-crops{display:flex;flex-direction:column;gap:16px;max-height:80vh;overflow:auto;}
+  .doc-crops .crop-page-label{font-size:12px;color:#9fb0d0;margin:2px 0 4px;}
+  .doc-loading{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#9fb0d0;font-size:12px;}
 </style>
 </head>
 <body>
@@ -225,112 +242,126 @@ async function checkHealth(eng){
   rebuildEngineDropdown();
 }
 
-function renderPages(pages){
+let _docObserver=null, _docPages=[], _docMeta={}, _docFallback=null;
+function ensureDocObserver(root){
+  if(_docObserver) _docObserver.disconnect();
+  _docObserver=new IntersectionObserver((entries)=>{
+    entries.forEach(en=>{ if(en.isIntersecting){ const el=en.target; if(!el.dataset.built) buildPageContent(el); } });
+  }, {root:root, rootMargin:'400px 0px'});
+}
+// 解析结果按「文件对象」连续渲染：整篇 Markdown + 多页纵向堆叠的排版还原 + 合并裁剪图。
+// 排版还原支持 ≥200 页：背景图与元素叠加都用 IntersectionObserver 懒构建，只渲染视口附近页。
+function renderPages(pages, meta){
   const box=$('#pages'); box.innerHTML='';
   if(!pages||!pages.length){box.innerHTML='<div class="hint">无页面结果</div>';return;}
-  const wrap=document.createElement('div'); wrap.className='pages';
-  for(const p of pages){
-    const d=document.createElement('div'); d.className='page';
-    const types={}; (p.elements||[]).forEach(e=>types[e.type]=(types[e.type]||0)+1);
-    const chips=Object.entries(types).map(([k,v])=>`<span class="chip">${k}: ${v}</span>`).join('');
-    d.innerHTML=`<div class="pmeta">page ${p.page} · ${p.width}×${p.height}px · elements=${(p.elements||[]).length} · crops=${(p.crops||[]).length}</div>
-      <div class="chips">${chips}</div>
-      <div class="view-tabs">
-        <button data-v="md" class="active" onclick="switchView(this,'md')">Markdown</button>
-        <button data-v="layout" onclick="switchView(this,'layout')">排版还原</button>
-        <button data-v="crops" onclick="switchView(this,'crops')">裁剪图</button>
-        <label class="hint"><input type="checkbox" checked onchange="toggleBorders(this)"/> 显示边框</label>
-        <label class="hint"><input type="checkbox" onchange="toggleOriginal(this)"/> 显示原图</label>
-      </div>
-      <div class="pview pview-md"></div>
-      <div class="pview pview-layout hidden"></div>
-      <div class="pview pview-crops hidden"></div>`;
-    // Markdown 视图（结构化渲染）
-    const mdEl=document.createElement('div'); mdEl.className='md-render';
-    mdEl.innerHTML = renderMarkdown(p.markdown||'');
-    d.querySelector('.pview-md').appendChild(mdEl);
-    // 排版还原视图（原图底 + bbox 叠加）；PDF 每页用各自的 page_image 作背景
-    d.querySelector('.pview-layout').appendChild(buildLayoutView(p, p.page_image || lastImageDataUrl));
-    // 裁剪图视图（所有识别后的原图裁切）
-    d.querySelector('.pview-crops').appendChild(buildCropsView(p));
-    wrap.appendChild(d);
-  }
-  box.appendChild(wrap);
+  _docPages=pages;
+  _docFallback=(pages.length===1 && lastImageDataUrl)?lastImageDataUrl:null;
+  _docMeta=(meta && meta.pdf_file_id)?{pdf_file_id:meta.pdf_file_id, pdf_page_url_template:meta.pdf_page_url_template}:{};
+  const doc=document.createElement('div'); doc.className='doc';
+  const bar=document.createElement('div'); bar.className='doc-bar';
+  bar.innerHTML='<div class="view-tabs">'+
+      '<button data-v="md" class="active" onclick="switchDocView(this,\'md\')">Markdown（整篇）</button>'+
+      '<button data-v="layout" onclick="switchDocView(this,\'layout\')">排版还原（连续）</button>'+
+      '<button data-v="crops" onclick="switchDocView(this,\'crops\')">裁剪图</button>'+
+    '</div>'+
+    '<div class="doc-tools hidden" data-for="layout">'+
+      '<label class="hint"><input type="checkbox" id="docShowOrig" onchange="docToggleOriginal(this)"/> 显示原图</label>'+
+      '<label class="hint"><input type="checkbox" id="docShowBorder" checked onchange="docToggleBorders(this)"/> 显示边框</label>'+
+      '<span class="hint">缩放</span>'+
+      '<input type="range" id="docZoom" min="0.4" max="2.5" step="0.1" value="1" oninput="docSetZoom(parseFloat(this.value))"/>'+
+      '<span id="docZoomLabel" class="layout-zoom-label">100%</span>'+
+      '<button class="sec" onclick="docResetZoom()">重置</button>'+
+    '</div>';
+  doc.appendChild(bar);
+  const mdView=document.createElement('div'); mdView.className='doc-md md-render hidden';
+  const layoutView=document.createElement('div'); layoutView.className='doc-layout layout-view hidden';
+  const cropsView=document.createElement('div'); cropsView.className='doc-crops crops-view hidden';
+  doc.appendChild(mdView); doc.appendChild(layoutView); doc.appendChild(cropsView);
+  box.appendChild(doc);
+  mdView.innerHTML=buildContinuousMarkdown(pages);
+  buildContinuousLayout(layoutView, pages);
+  buildContinuousCrops(cropsView, pages);
+  switchDocView(bar.querySelector('button[data-v="md"]'), 'md');
 }
-
-function switchView(btn, v){
-  const page=btn.closest('.page');
-  page.querySelectorAll('.view-tabs button').forEach(b=>b.classList.remove('active'));
+function switchDocView(btn, v){
+  const doc=btn.closest('.doc');
+  doc.querySelectorAll('.view-tabs button').forEach(b=>b.classList.remove('active'));
   btn.classList.add('active');
-  page.querySelector('.pview-md').classList.toggle('hidden', v!=='md');
-  page.querySelector('.pview-layout').classList.toggle('hidden', v!=='layout');
-  page.querySelector('.pview-crops').classList.toggle('hidden', v!=='crops');
-}
-
-function toggleOriginal(cb){
-  const page=cb.closest('.page');
-  const lp=page.querySelector('.layout-page');
-  if(lp) lp.classList.toggle('show-original', cb.checked);
-}
-
-function toggleBorders(cb){
-  const page=cb.closest('.page');
-  page.querySelectorAll('.layout-box').forEach(b=>b.classList.toggle('show-border', cb.checked));
-}
-
-// 用解析出的 bbox 在页面上还原排版：原图作底，文字框按坐标绝对定位叠加
-// 支持滚轮/滑块缩放（10%~300%），默认 100% 原始尺寸
-function buildLayoutView(p, imgUrl){
-  const W=p.width||1, H=p.height||1;
-  const outer=document.createElement('div'); outer.className='layout-wrap';
-
-  // 工具栏
-  const tb=document.createElement('div'); tb.className='layout-toolbar';
-  const zLabel=document.createElement('span'); zLabel.className='layout-zoom-label'; zLabel.textContent='100%';
-  const slider=document.createElement('input'); slider.type='range'; slider.min='10'; slider.max='300'; slider.value='100'; slider.step='10';
-  const resetBtn=document.createElement('button'); resetBtn.className='sec'; resetBtn.textContent='重置缩放';
-  const status=document.createElement('span'); status.className='layout-img-status'; status.textContent='加载中…';
-  tb.appendChild(document.createTextNode('缩放 '));tb.appendChild(slider);tb.appendChild(zLabel);
-  tb.appendChild(resetBtn);tb.appendChild(status);
-  outer.appendChild(tb);
-
-  // 视图容器
-  const wrap=document.createElement('div'); wrap.className='layout-view';
-  const page=document.createElement('div'); page.className='layout-page';
-
-  // 原图底图
-  if(imgUrl){
-    const img=document.createElement('img'); img.className='bg';
-    img.alt='排版还原底图'; img.src=imgUrl;
-    img.onload=function(){
-      status.className='layout-img-status';
-      status.textContent='原图就绪 '+this.naturalWidth+'×'+this.naturalHeight+'px（默认隐藏，勾选“显示原图”对照）';
-      setZoom(parseInt(slider.value,10));
-    };
-    img.onerror=function(){
-      status.className='layout-img-status err'; status.textContent='✗ 加载失败';
-    };
-    page.appendChild(img);
-  } else {
-    // 无原图：按页面宽高比撑开还原层，保证 bbox 叠加仍有尺寸基准
-    page.style.aspectRatio = W + ' / ' + H;
-    page.style.width = '100%';
-    status.className='layout-img-status err'; status.textContent='⚠ 无原图（仅还原层）';
+  doc.querySelector('.doc-md').classList.toggle('hidden', v!=='md');
+  doc.querySelector('.doc-layout').classList.toggle('hidden', v!=='layout');
+  doc.querySelector('.doc-crops').classList.toggle('hidden', v!=='crops');
+  doc.querySelector('.doc-tools').classList.toggle('hidden', v!=='layout');
+  if(v==='layout'){
+    const layout=doc.querySelector('.doc-layout');
+    ensureDocObserver(layout);
+    layout.querySelectorAll('.doc-page').forEach(pg=>{ if(!pg.dataset.built) _docObserver.observe(pg); });
   }
-
-  // 文字框（百分比坐标 → 相对 page 定位）
-  // 预建 crop 索引：按 element_idx 或 bbox 近似匹配，供 figure 等类型内嵌图片
+}
+function docToggleOriginal(cb){ const l=document.querySelector('.doc-layout'); if(l) l.classList.toggle('show-original', cb.checked); }
+function docToggleBorders(cb){ const l=document.querySelector('.doc-layout'); if(l) l.classList.toggle('show-borders', cb.checked); }
+function docSetZoom(v){ v=Math.max(0.4,Math.min(2.5,v||1)); const inner=document.querySelector('.doc-layout-inner'); if(inner) inner.style.setProperty('--zoom', v); const lab=document.getElementById('docZoomLabel'); if(lab) lab.textContent=Math.round(v*100)+'%'; }
+function docResetZoom(){ const s=document.getElementById('docZoom'); if(s) s.value=1; docSetZoom(1); }
+function buildContinuousMarkdown(pages){
+  let html='';
+  for(const p of pages){
+    html+='<div class="md-page-sep">第 '+(p.page)+' 页</div>';
+    const md=p.markdown||'';
+    html += md.trim() ? renderMarkdown(md) : '<p class="hint">（无 Markdown 输出）</p>';
+  }
+  return html;
+}
+function buildContinuousLayout(container, pages){
+  const inner=document.createElement('div'); inner.className='doc-layout-inner';
+  container.appendChild(inner);
+  container.classList.add('show-borders');
+  ensureDocObserver(container);
+  pages.forEach((p,idx)=>{
+    const W=p.width||1, H=p.height||1;
+    const frame=document.createElement('div'); frame.className='doc-page';
+    frame.dataset.idx=idx; frame.dataset.built='0';
+    frame.style.aspectRatio=W+' / '+H;
+    frame.style.width='calc(var(--base-w) * var(--zoom,1))';
+    const lab=document.createElement('div'); lab.className='doc-page-label';
+    lab.textContent='第 '+(p.page||(idx+1))+' 页 · '+W+'×'+H+' · 元素 '+(p.elements||[]).length;
+    frame.appendChild(lab);
+    const ph=document.createElement('div'); ph.className='doc-loading'; ph.textContent='渲染中…';
+    frame.appendChild(ph);
+    inner.appendChild(frame);
+    _docObserver.observe(frame);
+  });
+}
+function buildPageContent(frame){
+  frame.dataset.built='1';
+  const idx=parseInt(frame.dataset.idx,10);
+  const p=_docPages[idx]; if(!p) return;
+  const ph=frame.querySelector('.doc-loading'); if(ph) ph.remove();
+  let url=p.page_image_url || p.page_image || _docFallback;
+  if(!url && _docMeta.pdf_page_url_template) url=_docMeta.pdf_page_url_template.replace('{page}', p.page||(idx+1));
+  if(url){
+    const img=document.createElement('img'); img.className='bg'; img.alt='第'+(p.page||idx+1)+'页';
+    img.loading='lazy'; img.src=url;
+    img.onerror=function(){ this.style.display='none'; };
+    frame.insertBefore(img, frame.firstChild);
+  }
+  const r=buildElementBoxes(p);
+  frame.appendChild(r.frag);
+  if(r.placed===0){
+    const note=document.createElement('div'); note.className='layout-note';
+    note.textContent=url?'该页未返回 bbox，无法还原排版 —— 可切换 Markdown 视图。':'该页无坐标且无原图。';
+    frame.appendChild(note);
+  }
+}
+function buildElementBoxes(p){
+  const frag=document.createDocumentFragment();
   const crops=p.crops||[];
-  const cropByIndex={};
-  const cropByBbox=[];   // [{bbox:[x1,y1,x2,y2], base64}]
+  const cropByIndex={}; const cropByBbox=[];
   for(let ci=0;ci<crops.length;ci++){
     const c=crops[ci];
-    if(c.base64) {
-      if(typeof c.element_index==='number'){ cropByIndex[c.element_index]=c.base64; }
-      if(Array.isArray(c.bbox)&&c.bbox.length===4){ cropByBbox.push({bbox:c.bbox, base64:c.base64}); }
+    if(c.base64){
+      if(typeof c.element_index==='number') cropByIndex[c.element_index]=c.base64;
+      if(Array.isArray(c.bbox)&&c.bbox.length===4) cropByBbox.push({bbox:c.bbox, base64:c.base64});
     }
   }
-  // bbox IoU 辅助：找最重叠的 crop
   function findCropBbox(x1,y1,x2,y2){
     let best=null, bestIoU=0;
     for(const cb of cropByBbox){
@@ -344,7 +375,7 @@ function buildLayoutView(p, imgUrl){
     }
     return best;
   }
-
+  const W=p.width||1, H=p.height||1;
   const els=p.elements||[]; let placed=0;
   for(let ei=0;ei<els.length;ei++){
     const e=els[ei];
@@ -359,66 +390,46 @@ function buildLayoutView(p, imgUrl){
     box.style.left=(x1/W*100)+'%'; box.style.top=(y1/H*100)+'%';
     box.style.width=((x2-x1)/W*100)+'%'; box.style.height=((y2-y1)/H*100)+'%';
     if(e.type==='table' && e.html){
-      box.innerHTML=`<div class="lt">[表格]</div>${e.html}`;
+      box.innerHTML='<div class="lt">[表格]</div>'+e.html;
     } else if(e.type==='figure'){
-      // 优先用 element_index 精确匹配，其次 bbox IoU 模糊匹配
       const imgSrc=cropByIndex[ei]||findCropBbox(x1,y1,x2,y2);
       if(imgSrc){
         const img=document.createElement('img'); img.src=imgSrc; img.alt=e.caption||e.content||'图'+ei;
         img.onerror=function(){ this.style.display='none'; box.textContent='🖼 '+(e.caption||e.content||'加载失败'); };
         box.appendChild(img);
-      } else {
-        box.textContent='🖼 '+(e.caption||e.content||'');
-      }
+      } else { box.textContent='🖼 '+(e.caption||e.content||''); }
     } else if(e.type==='formula'){
       const lab=document.createElement('div'); lab.className='lt'; lab.textContent='[公式]';
       const fx=document.createElement('span'); fx.className='latex';
-      const tex = e.latex || e.content || '';
-      if(tex){
-        fx.innerHTML = renderLatex(tex);
-      } else {
-        // 公式未被识别为 LaTeX：尝试展示该区域原图裁切，否则标注未识别
-        const crop = cropByIndex[ei] || findCropBbox(x1,y1,x2,y2);
-        if(crop){
-          const img=document.createElement('img'); img.src=crop; img.className='formula-img'; img.alt='公式原图';
-          fx.appendChild(img);
-        } else {
-          fx.textContent='（公式未识别）';
-        }
+      const tex=e.latex||e.content||'';
+      if(tex){ fx.innerHTML=renderLatex(tex); }
+      else {
+        const crop=cropByIndex[ei]||findCropBbox(x1,y1,x2,y2);
+        if(crop){ const img=document.createElement('img'); img.src=crop; img.className='formula-img'; img.alt='公式原图'; fx.appendChild(img); }
+        else { fx.textContent='（公式未识别）'; }
       }
       box.appendChild(lab); box.appendChild(fx);
     } else {
-      // 普通文字框：渲染其中的行内 $...$ 公式（如 $\triangle ABC$）
-      box.innerHTML = renderInlineLatex(e.content||'');
+      box.innerHTML=renderInlineLatex(e.content||'');
     }
-    page.appendChild(box); placed++;
+    frag.appendChild(box); placed++;
   }
-  wrap.appendChild(page);
-  outer.appendChild(wrap);
-
-  // 缩放控制（CSS transform，不影响布局计算）
-  function setZoom(pct){
-    zLabel.textContent=pct+'%';
-    page.style.transform='scale('+pct/100+')';
-    page.style.transformOrigin='top left';
-  }
-  slider.oninput=function(){ setZoom(parseInt(this.value,10)); };
-  resetBtn.onclick=function(){ slider.value=100; setZoom(100); };
-  wrap.onwheel=function(ev){
-    ev.preventDefault();
-    let v=parseInt(slider.value,10)||100;
-    v+=ev.deltaY<0?10:-10;
-    v=Math.max(10,Math.min(300,v));
-    slider.value=v; setZoom(v);
-  };
-
-  if(placed===0){
-    const note=document.createElement('div'); note.className='layout-note';
-    note.textContent=imgUrl?'该引擎未返回 bbox，无法还原排版 —— 请切换 Markdown 视图。':'无坐标且无原图。';
-    wrap.appendChild(note);
-  }
-  return outer;
+  return {frag, placed};
 }
+function buildContinuousCrops(container, pages){
+  pages.forEach(p=>{
+    const crops=p.crops||[];
+    if(!crops.length) return;
+    const head=document.createElement('div'); head.className='crop-page-label';
+    head.textContent='第 '+(p.page)+' 页';
+    container.appendChild(head);
+    container.appendChild(buildCropsView(p));
+  });
+}
+
+// ===== 旧版「逐页卡片」渲染函数（switchView/toggleOriginal/toggleBorders/buildLayoutView）=====
+// 已被连续文档视图（上方 renderPages 区域）取代，此处仅保留占位，无调用，可安全删除。
+
 
 // 裁剪图视图：把该页所有"识别后的原图裁切"以网格形式展示，便于核对引擎到底裁出了什么
 function buildCropsView(p){
@@ -653,7 +664,7 @@ async function doParse(){
       j=await r.json();
     }
     $('#out').textContent=previewJson(j);
-    renderPages(j.pages);
+    renderPages(j.pages, j);
   }catch(e){ $('#out').textContent='错误: '+e; }
 }
 
@@ -703,7 +714,7 @@ function pollTask(id){
         clearInterval(_pollTimer);
         const res=await (await fetch('/task/'+id+'/result')).json();
         $('#out').textContent=previewJson(res);
-        renderPages(res.pages);
+        renderPages(res.pages, res);
       }
     }catch(e){ $('#taskbar').textContent='轮询错误: '+e; }
   },2500);

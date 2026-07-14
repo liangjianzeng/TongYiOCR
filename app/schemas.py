@@ -42,7 +42,8 @@ class OCRPage(BaseModel):
     markdown: str = Field("", description="完整 Markdown 文本")
     elements: List[OCRElement] = Field(default_factory=list, description="结构化元素列表")
     crops: List[OCRCrop] = Field(default_factory=list, description="裁剪图列表（base64）")
-    page_image: Optional[str] = Field(None, description="该页原图 base64（PDF 上传时内联，供排版还原背景；超页数限制时为空）")
+    page_image: Optional[str] = Field(None, description="该页原图 base64（单图上传时由前端用原图兜底，PDF 已改为懒加载 url）")
+    page_image_url: Optional[str] = Field(None, description="该页原图懒加载地址（PDF 上传时由 /pdf_page/{file_id}/{page} 提供，供排版还原背景）")
 
 
 class OCRParseResponse(BaseModel):
@@ -53,6 +54,9 @@ class OCRParseResponse(BaseModel):
     engine: Optional[str] = None
     # GLM-OCR 额外保留原始 json_result（结构兼容）
     json_result: Optional[Any] = None
+    # PDF 上传：逐页懒加载背景图所需元数据
+    pdf_file_id: Optional[str] = Field(None, description="上传 PDF 的 file_id（/pdf_page 懒加载用）")
+    pdf_page_url_template: Optional[str] = Field(None, description="逐页背景图 URL 模板，含 {page} 占位")
 
 
 # ============================================================
@@ -133,6 +137,9 @@ class TaskResultResponse(BaseModel):
     engine: Optional[str] = None
     pages: List[OCRPage] = Field(default_factory=list)
     total_pages: Optional[int] = None
+    page_errors: Optional[dict] = None
+    pdf_file_id: Optional[str] = None
+    pdf_page_url_template: Optional[str] = None
     completed_at: Optional[str] = None
     error: Optional[str] = None
 

@@ -258,6 +258,15 @@ function setZoom(pct) {
 
 > 注意：这是"够用"的 OCR 公式子集渲染，并非完整 LaTeX 引擎。复杂矩阵、多行对齐等场景不会完美呈现，但足以让还原视图里的公式**以数学样式（而非原始 `\(...\)` 文本）显示**。
 
+### 3.7 连续文档视图（多页纵向堆叠 + 懒加载，支持 ≥200 页）
+
+测试台不再按"逐页卡片"呈现，而是把整个 PDF/文档当作**一个连续对象**渲染：
+
+- **整篇连续排版还原**：多页在白底容器里**纵向堆叠**（像 PDF 阅读器），顶部一套全局 tab（整篇 Markdown / 连续排版还原 / 裁剪图）+ 文档级缩放滑块（40%~250%）+ 全局"显示原图 / 显示边框"开关。
+- **背景图懒加载（关键，撑住长文档）**：后端把上传 PDF 落盘（`pdf_utils.store_pdf` → `file_id`），解析结果里**不再内联任何背景 base64**，而是给每页挂 `page_image_url = /pdf_page/{file_id}/{page}?dpi=110`（含顶层 `pdf_file_id`/`pdf_page_url_template`）。`/pdf_page` 端点按页渲染 PNG（带磁盘缓存 + `Cache-Control`）。前端用 `IntersectionObserver`（`rootMargin:400px`）只给**视口附近**的页加载背景图 + 构建 bbox 叠加——几百页也不会撑爆响应报文或卡死浏览器。
+- **缩放零成本**：通过 CSS 变量 `--zoom` 改 `.doc-page` 宽度（`calc(var(--base-w) * var(--zoom))`），bbox 用百分比定位，随页面宽度自动缩放，无需重算坐标。
+- **单图场景兼容**：非 PDF 单图上传时，前端用 `lastImageDataUrl` 作 `page_image` 兜底（走 `p.page_image_url || p.page_image || _docFallback`）。
+
 ---
 
 ## 四、踩坑清单（直接避坑）
@@ -273,6 +282,8 @@ function setZoom(pct) {
 | **crop 错位 / 套进旁边文字 / 整张空白**（Unlimited-OCR 明显） | 引擎返回**归一化坐标（0~1000）**，与真实像素尺寸不符，按越界坐标裁原图被截断到边缘 | 后端 `_detect_and_scale_coords()` 自动检测并缩放到像素座标（见 §1.1），缩放必须在生成 crops 前完成 |
 | 公式显示为 `\(...\)` 原始 LaTeX + 控制字符（Unlimited-OCR） | 引擎直接吐出原始 `\(` `\)` 包裹和控制字符（如 `\t`） | 后端 `_clean_latex()` 清洗：去 `\(\)`/`\[\]` 包裹 → `$...$`，并 strip 控制字符 |
 | 排版还原里公式仍是裸 `$...$` 文本（Unlimited-OCR） | **该引擎不产出独立 `formula` 元素、`latex` 恒为 `null`**，公式内嵌在段落 `content` 的 `$...$` 里；只修 `formula` 分支几乎不触发 | 用 `renderInlineLatex()` 在文字框里就地渲染 `$...$` 行内公式（见 §3.6） |
+| 解析结果里 `pdf_file_id` / `page_image_url` 是 `null`（PDF 上传后排版还原无背景） | 端点声明了 `response_model=OCRParseResponse`，**Pydantic 会把响应里 schema 未声明的字段全部剥掉** | 在 `OCRParseResponse` 声明 `pdf_file_id`/`pdf_page_url_template`、`OCRPage` 声明 `page_image_url`；任务结果同理在 `TaskResultResponse` 声明 |
+| 几百页 PDF 上传后响应报文巨大 / 浏览器卡死 | 早期把每页背景图 base64 内联进响应 | 改为落盘 + 懒加载：响应只返回 `page_image_url`，背景由前端 `IntersectionObserver` 按需向 `/pdf_page` 拉取（见 §3.7）；单 PDF 上限提到 500 页 |
 | 同一段文字**叠加两层**（Unlimited-OCR 偶发） | 引擎把同一区域输出了两次（bbox 差 1px、内容差 1 字符） | 后端 `_dedup_elements()` 按"类型 + 量化 bbox + 去标点签名"去重近重复块 |
 
 ---
