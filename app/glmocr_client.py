@@ -26,6 +26,7 @@ from typing import List, Optional, Any, Tuple, Dict
 from PIL import Image
 
 from . import config
+from .layout_postprocess import postprocess_layout
 
 try:
     from glmocr import GlmOcr
@@ -279,6 +280,7 @@ def parse(
             elements, crops = _build_elements_and_crops(
                 jr_page, pil, width, height, doc_id, i + 1
             )
+            postprocess_layout(elements)
             pages.append({
                 "page": i + 1,
                 "width": width,

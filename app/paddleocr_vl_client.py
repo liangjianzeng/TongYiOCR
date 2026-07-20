@@ -19,6 +19,7 @@ from typing import List, Optional, Dict, Any
 from PIL import Image
 
 from . import config
+from .layout_postprocess import postprocess_layout
 
 
 def _build_url(path: str) -> str:
@@ -134,6 +135,7 @@ def parse(images: List[dict], task_type: str = "general", language: str = "ch", 
                         "element_index": len(elements) - 1,   # 该 crop 对应元素的 elements[] 下标
                         "bbox": [float(v) for v in bbox],
                     })
+        postprocess_layout(elements)
         pages.append({
             "page": page_no,
             "width": width,

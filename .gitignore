@@ -45,6 +45,9 @@ proxy_access.log
 .DS_Store
 Thumbs.db
 
+# ===== 调试预览快照（本地验证用，非交付物） =====
+preview_*.html
+
 # ===== Node（若后续接入前端） =====
 node_modules/
 npm-debug.log*

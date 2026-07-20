@@ -285,6 +285,7 @@ function setZoom(pct) {
 | 解析结果里 `pdf_file_id` / `page_image_url` 是 `null`（PDF 上传后排版还原无背景） | 端点声明了 `response_model=OCRParseResponse`，**Pydantic 会把响应里 schema 未声明的字段全部剥掉** | 在 `OCRParseResponse` 声明 `pdf_file_id`/`pdf_page_url_template`、`OCRPage` 声明 `page_image_url`；任务结果同理在 `TaskResultResponse` 声明 |
 | 几百页 PDF 上传后响应报文巨大 / 浏览器卡死 | 早期把每页背景图 base64 内联进响应 | 改为落盘 + 懒加载：响应只返回 `page_image_url`，背景由前端 `IntersectionObserver` 按需向 `/pdf_page` 拉取（见 §3.7）；单 PDF 上限提到 500 页 |
 | 同一段文字**叠加两层**（Unlimited-OCR 偶发） | 引擎把同一区域输出了两次（bbox 差 1px、内容差 1 字符） | 后端 `_dedup_elements()` 按"类型 + 量化 bbox + 去标点签名"去重近重复块 |
+| 题目和答案被**排版到同一行**、和原图差异大（Unlimited-OCR） | 后端 `_merge_adjacent_elements()` 把相邻的同类型逐行框**全部合并**成一个大块（并集 bbox + `\n` 拼接 content）；前端又把 `\n` 折叠成空格、再用 `overflow:hidden`+极小高度裁成只露第一行 → 看着就像"一行" | 后端合并加"新块起始行"判定（`_is_block_starter`：题号 `1.`/`（三）`、选项 `A.`、中文序号 `一、` 等）遇到即独立成块，保留引擎原本正确的逐行 bbox；前端文字框改用 `white-space:pre-wrap` + `overflow:visible` + 高度随内容撑开，保留换行不再裁切 |
 
 ---
 

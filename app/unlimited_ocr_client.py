@@ -23,6 +23,7 @@ from typing import List, Optional, Dict, Any
 from PIL import Image
 
 from . import config
+from .layout_postprocess import postprocess_layout
 
 _label_map = {
     "text": "paragraph",
@@ -42,8 +43,13 @@ _label_map = {
 # 仅匹配 det 开标注，内容（可能跨多行、含 <table>）留待按块截取
 _DET_RE = re.compile(r"<\|det\|>(\w+)\s+\[([\d.,\s]+)\]<\|/det\|>")
 _TABLE_RE = re.compile(r"<table>.*?</table>", re.DOTALL)
-# 图注识别：普通文字若疑似图片说明，则归并为 figure 占位（不裁真实图）
-_CAPTION_RE = re.compile(r"(插图|图片|图示|如图所示|见[上下]图|图\s*[:：]|上图|下图)")
+# 图注识别：普通文字若疑似图片说明，则归并为 figure 占位（不裁真实图）。
+# 必须非常保守：
+#   - 不含"如图所示"等题目正文常见短语（它们不是图注，误判会把整段题目变成 🖼 图片占位）
+#   - 仅匹配"图N：/图N："、"见下图"、"上图/下图"、"插图/图片/图示"等明确图注标记
+#   - 且文字较短（图注通常是一句话，不会是长段题目正文）
+_CAPTION_RE = re.compile(r"(图\s*[\d一二三四五六七八九十]+\s*[:：]|见[上下]图|上图|下图|插图|图片|图示)")
+_CAPTION_MAX_LEN = 40  # 超过此长度的文本视为题目正文，不归并为图注
 # 控制字符（去 \t \r 等模型偶发噪声，保留换行）
 _CTRL_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 
@@ -78,6 +84,156 @@ def _dedup_elements(elements: list) -> list:
     return out
 
 
+# 题号前缀提取：从内容开头匹配 "4." / "4、" / "4）" 等题号标记
+# 兼容 VLM 常见变体：前导 markdown（**4.*/# 4.）、前导空白、中文括号
+_QNUM_PREFIX_RE = re.compile(
+    r'^\s*(?:'
+    r'\*{1,3}\s*'        # markdown 加粗/斜体 **4. *4.
+    r'|#{1,6}\s*'        # markdown 标题 # 4.
+    r')?'
+    r'(\d+[.、)\）])'     # 实际题号：数字 + 中文/英文标点
+)
+
+
+def _extract_qnum_prefix(content: str) -> str | None:
+    """提取题号前缀（如 "4."），无则返回 None。"""
+    if not content:
+        return None
+    m = _QNUM_PREFIX_RE.match(content)
+    return m.group(1) if m else None
+
+
+def _normalize_content_head(content: str, max_chars: int = 50) -> str:
+    """提取内容「有效首行」用于相似度比对：去空白/markdown/标点，取前 max_chars。
+
+    无论 VLM 输出 "4." / "**4.**" / "\\n4." / "4、" 都能归一化为相同签名。
+    """
+    if not content:
+        return ''
+    # 去前导空白、markdown、LaTeX
+    s = content.strip()
+    s = re.sub(r'^[\s\*#>`\-\=]+', '', s)   # 去前导 markdown
+    # 取第一行（遇到 \\n 或选项行就截断）
+    first_line = s.split('\n')[0]
+    # 去除纯标点/空格，保留中英文数字
+    sig = re.sub(r'[^\w\u4e00-\u9fff]', '', first_line)
+    return sig[:max_chars].lower()
+
+
+def _is_page_footer(content: str) -> bool:
+    """检测是否为 PDF 页脚/页码文字（如 "第1页（共14页）" / "- 3 -" / "Page 5"）。
+    
+    这些不应作为正文渲染，或至少应 nowrap 不换行。
+    """
+    if not content or len(content.strip()) > 60:
+        return False
+    s = content.strip()
+    return bool(re.match(
+        r'^(?:'
+        r'第\s*\d+\s*页(?:[（(]\s*共\s*\d+\s*页[)）])?'  # 第1页（共14页）
+        r'|-\s*\d+\s*-|'                                   # - 3 -
+        r'|Page\s*\d+'                                     # Page 5
+        r'|^\d+\s*/\s*\d+$'                                # 1 / 14
+        r')$',
+        s, re.IGNORECASE
+    ))
+
+
+def _norm_line_for_dedup(line: str) -> str:
+    """单行归一化（用于合并时去重比对）：去前导 markdown/空白、去标点，保留中英文数字。"""
+    s = line.strip()
+    s = re.sub(r'^[\s\*#>`\-\=]+', '', s)
+    s = re.sub(r'[^\w\u4e00-\u9fff]', '', s)
+    return s.lower()
+
+
+def _merge_block_contents(parts: list) -> str:
+    """拼接多块内容，去除重复行。
+
+    同一道题被 VLM 拆成多块时，题干（首行）在每块里都重复出现——
+    若直接拼接会导致「题目文字重复」。这里按归一化行做去重，
+    只保留首次出现的行，同时保留 A/B/C/D 等互不相同的选项。
+    """
+    seen: set = set()
+    out_lines: list = []
+    for p in parts:
+        for line in (p or '').split('\n'):
+            n = _norm_line_for_dedup(line)
+            if not n:
+                # 保留单个空行作为分隔，避免连续空行
+                if out_lines and out_lines[-1] != '':
+                    out_lines.append('')
+                continue
+            if n in seen:
+                continue
+            seen.add(n)
+            out_lines.append(line.rstrip())
+    while out_lines and out_lines[-1] == '':
+        out_lines.pop()
+    return '\n'.join(out_lines)
+
+
+def _dedup_question_duplicates(elements: list) -> tuple:
+    """去除「同一道题被引擎拆成多块」的重复 + 标记页脚。
+
+    返回 (merged_list, merged_y_ranges)：
+      - merged_list: 去重后的元素列表
+      - merged_y_ranges: list of (y_min, y_max)，每个合并组覆盖的 y 范围。
+        调用方可用此信息校正夹在合并组之间的 figure 元素 bbox，
+        避免 VLM 拆块时下块的 figure bbox 偏低导致裁剪顶部被截。
+    """
+    # 第一步：标记页脚
+    for e in elements:
+        if _is_page_footer(e.get('content') or ''):
+            e['_is_footer'] = True
+
+    # 第二步：按内容首行签名分组（模糊匹配同题）
+    groups: dict[str, list] = {}
+    order: list = []
+    for e in elements:
+        head = _normalize_content_head(e.get('content') or '')
+        if len(head) >= 6:  # 足够长的有意义内容才参与分组
+            key = head
+        else:
+            key = f'__short_{id(e)}'
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(e)
+
+    merged = []
+    merged_y_ranges = []  # 新增：记录每个合并组的 y 范围
+
+    for key in order:
+        grp = groups[key]
+
+        # 短内容/唯一元素直接保留
+        if len(grp) == 1 or key.startswith('__short__'):
+            merged.append(grp[0])
+            continue
+
+        # 多个相似元素 → 合并为一个（同一题被 VLM 拆成多块）
+        first = grp[0]
+        bboxes = [e.get('bbox', [0, 0, 0, 0])
+                  for e in grp if e.get('bbox') and len(e['bbox']) == 4]
+        merged_bbox = [
+            min(b[0] for b in bboxes), min(b[1] for b in bboxes),
+            max(b[2] for b in bboxes), max(b[3] for b in bboxes),
+        ] if bboxes else (first.get('bbox') or [0, 0, 0, 0])
+
+        parts = [e.get('content', '') for e in grp]
+        me = dict(first)
+        me['bbox'] = merged_bbox
+        me['content'] = _merge_block_contents(parts)
+        merged.append(me)
+
+        # 记录合并组 y 范围（用于校正夹在中间的 figure bbox）
+        if bboxes:
+            merged_y_ranges.append((merged_bbox[1], merged_bbox[3]))
+
+    return merged, merged_y_ranges
+
+
 def _parse_det_blocks(md: str) -> List[tuple]:
     """返回 (label, [x1,y1,x2,y2], content) 列表。
 
@@ -108,6 +264,25 @@ def _clean_latex(s: str) -> str:
     return s.strip()
 
 
+# 行首判定"新逻辑块"：题目序号(1. / 2、/ （三）)、选项(A. / B、)、中文序号(一、/ 二。)
+# 这些行即便与上一行 y 间距很小、水平重叠，也应独立成块，避免"题目+答案被并成一行"。
+_BLOCK_STARTER_RE = re.compile(
+    r"^\s*(?:"
+    r"\d+[.、)）]|"                      # 1. 2、 3)
+    r"[A-Za-z][.、)）]|"                  # A. B、 C)
+    r"[（(][0-9一二三四五六七八九十百千]+[)）]|"  # （1）（三）
+    r"[一二三四五六七八九十百千]+[.、、]"         # 一、 二、
+    r")"
+)
+
+
+def _is_block_starter(text: str) -> bool:
+    """该行是否开启一个新的逻辑块（题号 / 选项 / 中文序号）。"""
+    if not text:
+        return False
+    return bool(_BLOCK_STARTER_RE.match(text))
+
+
 def _merge_adjacent_elements(elements: list, page_h: float = 1200) -> list:
     """将相邻同类的行级 bbox 合并为块级段落。
 
@@ -116,6 +291,7 @@ def _merge_adjacent_elements(elements: list, page_h: float = 1200) -> list:
       1. 类型完全相同且属于可合并集（paragraph/header/footer，title 不并入）
       2. 与上一组的 y 间距 <= 页面高度 * 2%
       3. 水平方向重叠 >= 25%
+      4. 当前行不是"新逻辑块"起始行（题号/选项/中文序号），否则独立成块
     """
     if not elements or len(elements) <= 1:
         return elements
@@ -153,7 +329,10 @@ def _merge_adjacent_elements(elements: list, page_h: float = 1200) -> list:
         overlap_w = max(0, ix2 - ix1)
         x_ok = (overlap_w / max(pw, cw)) >= _X_OVERLAP if max(pw, cw) > 0 else False
 
-        if type_ok and y_ok and x_ok:
+        # 当前行是题号/选项等"新块"起始 → 不并入上一组，独立成块
+        block_ok = not _is_block_starter(curr_e.get("content", "") or "")
+
+        if type_ok and y_ok and x_ok and block_ok:
             cur[1] = j
         else:
             groups.append(list(cur))
@@ -211,32 +390,41 @@ def _decode_dims(b64: str) -> tuple:
 
 
 def _detect_and_scale_coords(elements: list, width: float, height: float) -> None:
-    """检测引擎坐标是否为归一化坐标（~1000 空间），若是则逐元素缩放到像素坐标。
+    """检测引擎坐标是否为归一化坐标（0~1000 空间），若是则逐元素缩放到像素坐标。
 
     Unlimited-OCR（baidu/Unlimited-OCR）基于 Qwen2-VL grounding，
     返回的 bbox 坐标为归一化值（0~1000），不匹配输入图片的实际像素尺寸。
-    判据：任一 bbox 坐标超过图片宽高 → 判定为归一化坐标系。
+
+    鲁棒判据（三条件全部满足才判定为归一化）：
+      1. 全局最大坐标值聚集在 ~1000 附近（900~1100，容忍模型输出噪声）；
+      2. 最大坐标显著小于对应图片尺寸（< 80%），排除「已是像素坐标」的情况；
+      3. 至少有半数元素的 bbox 跨度合理（宽高均 > 图片的 1%），排除空框干扰。
     """
     if not elements or width <= 0 or height <= 0:
         return
-    needs_scale = False
-    for e in elements:
-        b = e.get("bbox")
-        if b and len(b) == 4:
-            if b[2] > width or b[3] > height or b[0] < 0 or b[1] < 0:
-                needs_scale = True
-                break
-    if not needs_scale:
+    valid = [e for e in elements if e.get("bbox") and len(e["bbox"]) == 4]
+    if not valid:
         return
+
+    max_cx = max(b[2] for b in (e["bbox"] for e in valid))
+    max_cy = max(b[3] for b in (e["bbox"] for e in valid))
+
+    # 条件 1 & 2：坐标聚集在 ~1000 且显著小于图片尺寸
+    near_1000_x = 900 <= max_cx <= 1100 and max_cx < width * 0.8
+    near_1000_y = 900 <= max_cy <= 1100 and max_cy < height * 0.8
+    is_normalized = near_1000_x or near_1000_y
+
+    if not is_normalized:
+        return
+
     sx = width / 1000.0
     sy = height / 1000.0
-    for e in elements:
-        b = e.get("bbox")
-        if b and len(b) == 4:
-            e["bbox"] = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
+    for e in valid:
+        b = e["bbox"]
+        e["bbox"] = [b[0] * sx, b[1] * sy, b[2] * sx, b[3] * sy]
 
 
-def _crop_to_base64(pil: Image.Image, bbox: List[float], pad: int = 3) -> Optional[str]:
+def _crop_to_base64(pil: Image.Image, bbox: List[float], pad: int = 12) -> Optional[str]:
     try:
         w, h = pil.size
         x1 = max(0, int(bbox[0]) - pad)
@@ -329,7 +517,8 @@ def parse(images: List[str], prompt: str, doc_id: str = "") -> dict:
                 else:
                     el["content"] = content
                 # 图注识别：普通文字疑似图片说明 → 归并为 figure 占位（不裁真实图）
-                if etype in ("paragraph", "title") and content and _CAPTION_RE.search(content):
+                # 仅当文字较短且匹配明确图注标记时才归并，避免把含"如图所示"的题目正文误判为图注
+                if etype in ("paragraph", "title") and content and len(content) <= _CAPTION_MAX_LEN and _CAPTION_RE.search(content):
                     el["type"] = "figure"
                     el["caption"] = content
                     el["is_caption"] = True
@@ -338,9 +527,27 @@ def parse(images: List[str], prompt: str, doc_id: str = "") -> dict:
             # 去重（引擎偶发同块重复）→ 合并相邻同类行级框为块级段落
             elements = _dedup_elements(elements)
             elements = _merge_adjacent_elements(elements, height or 1200)
+            # 题号去重：VLM 常把同一道题拆成多块（如上块含A/B、下块含C/D），按内容签名合并
+            elements, merged_y_ranges = _dedup_question_duplicates(elements)
 
             # 坐标归一化修正：引擎返回 ~1000 空间坐标 → 缩放到实际像素
             _detect_and_scale_coords(elements, width, height)
+
+            # 校正夹在合并组之间的 figure bbox：
+            # VLM 拆块时下块的 figure（如C/D选项图）bbox y1 偏低 → 裁剪时顶部被截。
+            # 将落在合并组 y 范围内（或紧随其后）的 figure 的 y1 向上扩展到合并组顶部。
+            # 容差：上半区 20px（figure 可能略高于文字），下半区 200px（第二子块的 figure
+            # 在其文字段下方，距合并组 y_max 可能较远）。
+            if merged_y_ranges:
+                for e in elements:
+                    if (e.get('type') == 'figure' and not e.get('is_caption')
+                            and e.get('bbox') and len(e['bbox']) == 4):
+                        b = e['bbox']
+                        for gy_min, gy_max in merged_y_ranges:
+                            # figure 顶部在合并组范围内或紧随其后 → 需要校正
+                            if gy_min - 20 <= b[1] <= gy_max + 200 and b[1] > gy_min + 5:
+                                e['bbox'] = [b[0], gy_min, b[2], b[3]]
+                                break
 
             # 生成 crops：仅"真实图片"（figure 且非图注文字）才从原图裁区域
             for ei, e in enumerate(elements):
@@ -378,6 +585,7 @@ def parse(images: List[str], prompt: str, doc_id: str = "") -> dict:
             elements = _merge_adjacent_elements(elements, height or 1200)
             _detect_and_scale_coords(elements, width, height)
 
+        postprocess_layout(elements)
         pages.append({
             "page": i + 1,
             "width": width,

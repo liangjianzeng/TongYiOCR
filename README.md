@@ -66,7 +66,8 @@ TongYiOCR/
 │   ├── task_queue.py           # 异步任务队列（串行单 worker + 引擎互斥锁）
 │   ├── glmocr_client.py        # GLM-OCR 引擎客户端（llama.cpp VLM）
 │   ├── unlimited_ocr_client.py # Unlimited-OCR 引擎客户端（Docker）
-│   └── paddleocr_vl_client.py  # PaddleOCR-VL 引擎客户端（Docker）
+│   ├── paddleocr_vl_client.py  # PaddleOCR-VL 引擎客户端（Docker）
+│   └── layout_postprocess.py   # 代理层统一版面后处理（阅读顺序 + 逻辑块）
 ├── engine_server.py            # PaddleOCR-VL 引擎服务（容器内 :8091 + 配套 vLLM）
 ├── docker/
 │   └── entrypoint.sh           # 引擎容器启动脚本（先起 vLLM，再起引擎）
@@ -249,6 +250,10 @@ docker compose up -d
 - **坐标系统**：`bbox = [x1, y1, x2, y2]`，像素，基于页面原始尺寸，左上角为原点。
 - **crops 来源**：优先用引擎原生裁剪图；当原生不可用（如 GLM-OCR selfhosted 下 `image_files` 为 None）时，按元素 bbox 从原图裁出，与 `elements` 一一对应。
 - **crops 元数据**：每个 crop 都带 `element_index`（指向 `elements[]` 的下标）与 `bbox`（与对应元素 bbox 一致）。这两个字段供前端把裁剪图对回版面位置——尤其是 `figure` 类几何图 / 插图，`element_index` 用于精确匹配，bbox 用于引擎未返回下标时的 IoU 模糊兜底匹配。
+- **代理层版面后处理字段（可选，代理层统一补充）**：三引擎原始 `elements[]` 通常只给 `bbox + content`，缺「阅读顺序」与「逻辑块」信息。代理在三个 client 解析出 elements 后会统一调用 `app/layout_postprocess.py`，**原地补充**三个可选字段，供前端「结构化（阅读流）」视图使用（详见下文）：
+  - `reading_order`（int）：全局阅读顺序。按元素中心 y 聚类成视觉行 → 行内按 x 排序后分配。
+  - `block_id`（int）：逻辑块编号。同一视觉行 / 选项组（A./B./C./D.）共享，前端按块成组。
+  - `is_option`（bool）：是否多选题选项，前端据此用 grid 横排成组。
 - **GLM-OCR** 在统一结构之外，额外保留 `json_result` 原文（SDK 原始输出），便于调用方做高级处理。
 
 ---
@@ -300,8 +305,14 @@ POST /unlimited-ocr/parse
 → 统一 OCRParseResponse（crops 由 bbox 派生）
 ```
 - 真实端点容器内为 `/v1/ocr/multi`（`enable_grounding=true` 返回 bbox）。
-- **坐标归一化**：Unlimited-OCR 返回的 bbox 是**归一化坐标（0~1000）**，与真实像素尺寸不符。后端 `_detect_and_scale_coords()` 会自动检测（任一坐标越界即判定）并缩放到像素坐标后再生成 crops，无需前端换算。若裁剪图仍错位，请检查该步是否生效。
-- **文本后处理**：引擎偶发把同一区域重复输出、或吐出原始 `\(...\)` LaTeX 与控制字符，后端 `_dedup_elements()` / `_clean_latex()` 会做去重与清洗。
+- **坐标归一化**：Unlimited-OCR 返回的 bbox 是**归一化坐标（0~1000）**，与真实像素尺寸不符。后端 `_detect_and_scale_coords()` 会检测并缩放到像素坐标后再生成 crops，无需前端换算。
+  - ⚠️ **易踩坑（已修复）**：Qwen2-VL grounding 的 bbox 本就会略超图片边界（正常噪声，如 `x2=913` 超 `900` 宽 13px）。早期用「任一 bbox 超界即判为归一化」的脆弱启发式，会把正常坐标误判为归一化并整体缩放约 10%，导致所有坐标偏移、裁剪图全错位、排版还原页面尺寸失真。现改用**鲁棒三条件**：坐标最大值须在 `[900, 1100]` 且 `< 图片尺寸×80%` 才判定归一化，正常噪声不再误触发。
+- **文本 / 版面后处理（代理层兜底，针对 VLM grounding 的固有缺陷）**：Unlimited-OCR 本质是 VLM 任意切块，无专用版面模型，原始输出存在以下典型问题，已在代理层统一修复：
+  - **同题拆块重复**：一道含图选择题常被拆成上下两块（上块题干+A/B、下块 C/D），且上下块都含完整题干 → 直接合并会使题干重复。代理用「内容首行归一化签名」做模糊去重（无论 `4.` / `**4.**` / `*4.*` / 全角 `４．` 全部归一），再用**行级去重**合并内容，保证题干只出现一次、ABCD 选项全保留。
+  - **图注误判**：早期把含「如图所示」的题目正文误归并为 `figure`（前端无裁剪图就渲染成 `🖼 文字`）。现仅匹配「图N：/见下图/上图/插图」等**明确图注标记**，且加长度守卫（>40 字视为正文），题目正文不再被误判为图。
+  - **选项图裁顶**：VLM 拆块时下块 figure 的 `bbox.y1` 偏低，裁掉选项图顶部。代理在去重后会对落在合并组 y 范围内的 figure 做**几何联动校正**（y1 上拉到组顶）并把裁剪 padding 从 3px 增至 12px。
+  - **页脚 / 页码换行**：PDF 原文底部页脚（如「第1页（共14页）」）被 OCR 成普通文字框，窄 bbox 中长文本换行。代理标记 `_is_page_footer`，前端用弱化灰字 `nowrap` 渲染。
+  - 引擎偶发吐出原始 `\(...\)` LaTeX 与控制字符，后端 `_dedup_elements()` / `_clean_latex()` 会做去重与清洗。
 - **前置**：先起 Unlimited-OCR Docker 容器（默认映射 8090）。
 
 **PaddleOCR-VL**
@@ -349,7 +360,7 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
 
 - **引擎下拉按健康过滤**：下拉只列出健康检查（`/xxx/health`）确认可用的引擎；不可用的自动隐藏。需先确认对应引擎已启动（见上文部署）。
 - **PDF 上传（支持 ≥200 页）**：文件选择支持图片与 PDF（`.pdf`）。选 PDF 时，后端用 pymupdf 把每页转成图片（OCR 用 200 DPI）并**落盘存储**（上限 500 页），再逐页送引擎解析；「同步解析」走 `*/parse_pdf`、「提交任务」走 `/task/submit_pdf`。**背景图改为懒加载**：每页不再内联 base64，而是返回 `page_image_url`（`/pdf_page/{file_id}/{page}`，带磁盘缓存），前端用 `IntersectionObserver` 仅在滚动到附近时才加载该页背景并构建 bbox 叠加——因此几百页也不会撑爆响应报文或卡死浏览器。
-- **连续文档视图**：解析结果按「文件对象」渲染，不再是逐页卡片。排版还原视图把多页**纵向连续堆叠**（像 PDF 阅读器），顶部统一三个 tab（整篇 Markdown / 连续排版还原 / 裁剪图），并提供**文档级缩放（40%~250%）**、全局「显示原图 / 显示边框」开关；背景图与元素叠加均懒加载，轻松浏览长文档。
+- **连续文档视图**：解析结果按「文件对象」渲染，不再是逐页卡片。排版还原视图把多页**纵向连续堆叠**（像 PDF 阅读器），顶部统一四个 tab（整篇 Markdown / 连续排版还原 / **结构化（阅读流）** / 裁剪图），并提供**文档级缩放（40%~250%）**、全局「显示原图 / 显示边框」开关；背景图与元素叠加均懒加载，轻松浏览长文档。
 - **实时请求日志**：通过 SSE 流（`GET /logs/stream`）实时展示代理收到的请求（时间、方法、路径、状态码、耗时、来源 IP）；时间为**北京时间（UTC+8）**；支持暂停 / 清空 / 自动滚动。
 - **Markdown 结构化预览**：解析返回的 Markdown 做轻量结构化渲染（标题 / 列表 / 表格 / 代码块），纵向滚动、按内容换行；响应报文预览中的大图 base64 会自动截断显示，避免浏览器卡死。**公式在 Markdown 视图以原始 `$...$` 源码显示**（数学样式渲染见「排版还原」视图），以忠实呈现引擎返回的文本。
 - **排版还原（Layout Reconstruction）**：在白底上按 `elements[].bbox` 绝对定位叠加出还原版面（文字 / 表格 / **公式** / 几何图），并通过 `crops[].element_index` 把 figure 裁剪图对回对应位置。公式渲染分两类：① 段落 / 标题 / 选项等**文字框内嵌的行内 `$...$` / `$$...$$` 公式**（Unlimited-OCR 真实返回的主要形态，LaTeX 字段为 `null`、公式直接写进 `content`）会被 `renderInlineLatex()` 就地渲染为数学样式；② 独立的 `formula` 类型元素（如 PaddleOCR-VL 返回）走 `renderLatex()` 渲染其 `latex`/`content`，若二者皆空则回退显示该区域原图裁切或标注「（公式未识别）」。所有公式渲染均为**纯前端离线 LaTeX 子集**（无 MathJax/KaTeX、无网络请求）。
@@ -357,9 +368,36 @@ GET  /task/queue/info    → { queue_size, current_task_id, total_tasks, complet
   - 勾选 **「显示原图」** 才把原图叠加到底层做对照；勾选 **「显示边框」** 控制 bbox 描边显隐。
   - 缩放用 CSS `transform: scale`（10%~300%），不影响百分比布局基准，零重排。
   - 详细的数据契约、坐标处理与前端渲染算法见 [`docs/layout-reconstruction-guide.md`](docs/layout-reconstruction-guide.md)。
+- **结构化视图（阅读流，治本排版错乱）**：在「连续排版还原」之外新增第四个 tab「结构化（阅读流）」。该视图**不再依赖 bbox 绝对定位**，而是按代理层补充的 `reading_order`（视觉行排序）与 `block_id`（逻辑块：选项组 / 段落）像真实文档一样流式排布——**从根本上解决「图文堆叠」「ABCD 选项错乱」**。多选题的 A/B/C/D 选项自动以 grid 成组横排；表格 / 公式按类型渲染。后端由 `app/layout_postprocess.py` 统一为**三个引擎**的 elements 补充这三个字段，故结构化视图对 GLM-OCR / Unlimited-OCR / PaddleOCR-VL **一致生效**。
 - **裁剪图诊断（Crops）**：每页额外提供 **「裁剪图」** tab，把 `crops[]` 中**每一张识别后从原图裁出的小图**网格陈列，并标注 `#序号` / `type` / 裁图尺寸，点击可开大图。用于快速核对"识别后的裁剪原图到底长什么样、有没有裁错 / 越界 / 空白"。这是排查坐标错位（见下）的最快手段。
 
 > 前端为纯静态文件，改动刷新即生效；代理主程序（`app/main.py` 等）改动需重启 8088。
+
+---
+
+## 代理层版面后处理与已知问题
+
+三引擎原始输出的 `elements[]` 普遍只带 `bbox + content`，**缺少阅读顺序与逻辑块信息**。若直接按 bbox 绝对定位渲染，任意坐标偏差都会造成「图文堆叠」「ABCD 选项错乱」。为此代理新增 `app/layout_postprocess.py`，在 `glmocr_client` / `unlimited_ocr_client` / `paddleocr_vl_client` 解析出 elements 后**统一调用**，原地补充 `reading_order` / `block_id` / `is_option` 三个字段（见[统一输出结构](#统一输出结构三引擎一致)），供「结构化（阅读流）」视图从根本规避排版错乱。
+
+### 各引擎能力差异与选型建议
+
+| 引擎 | 版面处理方式 | 坐标质量 | 适用场景 | 注意 |
+|------|------|------|------|------|
+| **PaddleOCR-VL** | PP-DocLayoutV3 真版面模型 → 区域 → VLM | 像素坐标，质量最高 | **版面敏感任务首选**（含图选择题、表格、公式混排） | 部署最重（需 vLLM + 引擎双进程、CUDA） |
+| **GLM-OCR** | glmocr SDK 内部用 PP-DocLayoutV3 辅助 | 像素坐标 | 通用文档、中文友好 | 依赖 llama.cpp VLM 端点（:8089） |
+| **Unlimited-OCR** | Qwen2-VL grounding，**无专用版面模型**，VLM 任意切块 | 归一化坐标（0~1000），噪声大 | **快糙文字抽取**、无版面要求的纯文本 | 见下方代理层兜底修复清单 |
+
+> **结论**：版面敏感（尤其含图选择题 / 复杂排版）优先用 **PaddleOCR-VL**；Unlimited-OCR 适合「只要文字、不在乎版面」的快速抽取，其版面问题已由代理层兜底，但不如真版面模型稳定。
+
+### Unlimited-OCR 代理层兜底修复清单（VLM grounding 固有缺陷）
+
+Unlimited-OCR 本质是 VLM 任意切块，原始输出存在以下典型问题，已在代理层统一修复（详见[接口契约](#接口契约)中 Unlimited-OCR 段）：
+
+1. **坐标归一化误判** → 鲁棒三条件（最大值 `[900,1100]` 且 `< 尺寸×80%` 才缩放），正常边界噪声不再误触发整体偏移。
+2. **同题拆块重复** → 内容首行归一化签名模糊去重 + 行级去重，题干只出现一次、ABCD 全保留。
+3. **图注误判（"如图所示"）** → 仅匹配明确图注标记 + 长度守卫（>40 字视为正文），题目正文不再变 `🖼` 占位。
+4. **选项图裁顶** → figure bbox 几何联动校正（y1 上拉到合并组顶）+ 裁剪 padding 3→12px。
+5. **页脚 / 页码换行** → `_is_page_footer` 标记 + 前端弱化灰字 `nowrap`。
 
 ---
 

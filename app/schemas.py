@@ -32,6 +32,10 @@ class OCRElement(BaseModel):
     latex: Optional[str] = Field(None, description="公式 LaTeX（formula 类型）")
     html: Optional[str] = Field(None, description="表格 HTML（table 类型）")
     caption: Optional[str] = Field(None, description="图片说明（figure 类型）")
+    # 代理层版面后处理（layout_postprocess）统一补充的字段，用于前端「结构化视图」
+    reading_order: Optional[int] = Field(None, description="阅读顺序：按中心y聚类视觉行→行内按x排序（代理层统一分配）")
+    block_id: Optional[int] = Field(None, description="逻辑块编号：同一视觉行/选项组共享，前端结构化分组用")
+    is_option: Optional[bool] = Field(None, description="是否多选题选项（A./B./C./D.），前端选项块用 grid 成组")
 
 
 class OCRPage(BaseModel):

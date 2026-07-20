@@ -74,16 +74,18 @@
   /* 默认：不显示原图底图，只呈现结构化还原层（白底上的 bbox 叠加）；
      勾选"显示原图"后（.layout-page.show-original）才把原图显示出来做对照 */
   .layout-page:not(.show-original)>img.bg{visibility:hidden;}
-  .layout-box{position:absolute;overflow:hidden;font-size:11px;line-height:1.5;color:#111;background:transparent;padding:2px 4px;box-sizing:border-box;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000;min-height:1.6em;min-width:3em;}
+  .layout-box{position:absolute;overflow:hidden;font-size:11px;line-height:1.5;color:#111;background:transparent;padding:2px 4px;box-sizing:border-box;text-shadow:0 0 2px #fff,0 0 2px #fff,0 0 4px #fff,0 0 4px #000;min-height:1.6em;min-width:3em;z-index:1;}
   .layout-box>img{display:block;width:100%;height:100%;object-fit:contain;border-radius:2px;}
   .layout-box.show-border{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
   .layout-box .lt{font-weight:700;color:#1b5ec9;font-size:10px;}
+  /* 文字框：预览时层级高于图片/表格/公式，加半透明白底防图文堆叠时不可读 */
+  .layout-box.text-box{background:rgba(255,255,255,.88);z-index:3;overflow:visible;}
   /* 表格：原样展现，白底不裁切，可横向滚动 */
-  .layout-box.table-box{overflow:auto;background:#fff;text-shadow:none;}
+  .layout-box.table-box{overflow:auto;background:#fff;text-shadow:none;z-index:2;}
   .layout-box.table-box table{border-collapse:collapse;width:100%;font-size:11px;color:#111;table-layout:fixed;}
   .layout-box.table-box th,.layout-box.table-box td{border:1px solid #999;padding:2px 4px;word-break:break-word;}
   /* 公式：单行不折行，避免被 bbox 宽度裁掉 */
-  .layout-box.formula-box{overflow:visible;white-space:normal;background:rgba(255,236,180,.25);text-shadow:none;font-style:italic;}
+  .layout-box.formula-box{overflow:visible;white-space:normal;background:rgba(255,236,180,.25);text-shadow:none;font-style:italic;z-index:2;}
 
   /* ===== 离线 LaTeX 公式渲染（无外部依赖） ===== */
   .latex{font-family:"Cambria Math","Times New Roman",Georgia,serif;font-style:italic;white-space:normal;line-height:1.4;}
@@ -97,7 +99,7 @@
   .latex .sqrt>.r{border-top:1px solid currentColor;padding:0 .2em;}
   .latex .latex-text{font-style:normal;}
   /* 图注：清晰呈现，避免重叠时看不清 */
-  .layout-box.figure-box{overflow:visible;background:rgba(120,220,160,.18);}
+  .layout-box.figure-box{overflow:visible;background:rgba(120,220,160,.18);z-index:1;}
 .layout-note{color:#7e8aa8;font-size:12px;padding:12px 14px;}
 
   /* ===== 裁剪图网格视图 ===== */
@@ -125,11 +127,28 @@
   .doc-page{position:relative;background:#fff;box-shadow:0 1px 8px rgba(0,0,0,.18);border-radius:4px;overflow:hidden;width:calc(var(--base-w) * var(--zoom));}
   .doc-page>img.bg{display:block;width:100%;height:auto;min-width:200px;}
   .doc-layout:not(.show-original) .doc-page>img.bg{visibility:hidden;}
-  .doc-page-label{position:absolute;top:6px;right:8px;font-size:10px;color:#666;background:rgba(255,255,255,.78);padding:1px 7px;border-radius:9px;z-index:6;pointer-events:none;}
+  .doc-page-label{position:absolute;top:6px;right:8px;font-size:10px;color:#666;background:rgba(255,255,255,.78);padding:1px 7px;border-radius:9px;z-index:6;pointer-events:none;white-space:nowrap;}
   .doc-layout.show-borders .layout-box{outline:1px solid rgba(58,122,254,.95);background:rgba(58,122,254,.18);}
   .doc-crops{display:flex;flex-direction:column;gap:16px;max-height:80vh;overflow:auto;}
   .doc-crops .crop-page-label{font-size:12px;color:#9fb0d0;margin:2px 0 4px;}
   .doc-loading{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#9fb0d0;font-size:12px;}
+  /* ===== 结构化视图（阅读流，治本排版错乱） ===== */
+  .doc-struct{background:#fafafa;border:2px solid #3a7afe;border-radius:10px;overflow:auto;max-height:80vh;padding:16px 20px;}
+  .doc-struct-inner{max-width:760px;margin:0 auto;}
+  .struct-page-sep{font-size:12px;color:#3a7afe;font-weight:600;margin:1em 0 .4em;border-top:1px dashed #ddd;padding-top:.4em;}
+  .struct-block{margin:.35em 0;}
+  .struct-para{margin:.3em 0;font-size:14px;line-height:1.7;color:#1a1a1a;}
+  .struct-formula{margin:.3em 0;font-size:14px;}
+  .struct-table{margin:.4em 0;overflow-x:auto;}
+  .struct-table table{border-collapse:collapse;}
+  .struct-table th,.struct-table td{border:1px solid #ccc;padding:3px 8px;font-size:13px;}
+  .struct-fig{max-width:100%;border:1px solid #ddd;border-radius:4px;margin:.3em 0;}
+  .struct-cap{font-size:12px;color:#666;margin:.2em 0 .5em;}
+  .option-block{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px 18px;background:#eef4ff;padding:8px 12px;border-radius:8px;margin:.4em 0;}
+  .option-item{font-size:14px;line-height:1.6;color:#1a1a1a;padding:2px 0;}
+  @media (max-width:560px){ .option-block{grid-template-columns:1fr;} }
+  /* 页脚/页码文字框：nowrap + 弱化 */
+  .layout-box.footer-box{background:transparent;text-shadow:none;font-size:9px;color:#aaa;white-space:nowrap;overflow:hidden;}
 </style>
 </head>
 <body>
@@ -246,7 +265,7 @@ let _docObserver=null, _docPages=[], _docMeta={}, _docFallback=null;
 function ensureDocObserver(root){
   if(_docObserver) _docObserver.disconnect();
   _docObserver=new IntersectionObserver((entries)=>{
-    entries.forEach(en=>{ if(en.isIntersecting){ const el=en.target; if(!el.dataset.built) buildPageContent(el); } });
+    entries.forEach(en=>{ if(en.isIntersecting){ const el=en.target; if(el.dataset.built!=='1') buildPageContent(el); } });
   }, {root:root, rootMargin:'400px 0px'});
 }
 // 解析结果按「文件对象」连续渲染：整篇 Markdown + 多页纵向堆叠的排版还原 + 合并裁剪图。
@@ -262,6 +281,7 @@ function renderPages(pages, meta){
   bar.innerHTML='<div class="view-tabs">'+
       '<button data-v="md" class="active" onclick="switchDocView(this,\'md\')">Markdown（整篇）</button>'+
       '<button data-v="layout" onclick="switchDocView(this,\'layout\')">排版还原（连续）</button>'+
+      '<button data-v="struct" onclick="switchDocView(this,\'struct\')">结构化（阅读流）</button>'+
       '<button data-v="crops" onclick="switchDocView(this,\'crops\')">裁剪图</button>'+
     '</div>'+
     '<div class="doc-tools hidden" data-for="layout">'+
@@ -276,11 +296,13 @@ function renderPages(pages, meta){
   const mdView=document.createElement('div'); mdView.className='doc-md md-render hidden';
   const layoutView=document.createElement('div'); layoutView.className='doc-layout layout-view hidden';
   const cropsView=document.createElement('div'); cropsView.className='doc-crops crops-view hidden';
-  doc.appendChild(mdView); doc.appendChild(layoutView); doc.appendChild(cropsView);
+  const structView=document.createElement('div'); structView.className='doc-struct hidden';
+  doc.appendChild(mdView); doc.appendChild(layoutView); doc.appendChild(cropsView); doc.appendChild(structView);
   box.appendChild(doc);
   mdView.innerHTML=buildContinuousMarkdown(pages);
   buildContinuousLayout(layoutView, pages);
   buildContinuousCrops(cropsView, pages);
+  buildContinuousStructured(structView, pages);
   switchDocView(bar.querySelector('button[data-v="md"]'), 'md');
 }
 function switchDocView(btn, v){
@@ -289,13 +311,27 @@ function switchDocView(btn, v){
   btn.classList.add('active');
   doc.querySelector('.doc-md').classList.toggle('hidden', v!=='md');
   doc.querySelector('.doc-layout').classList.toggle('hidden', v!=='layout');
+  doc.querySelector('.doc-struct').classList.toggle('hidden', v!=='struct');
   doc.querySelector('.doc-crops').classList.toggle('hidden', v!=='crops');
   doc.querySelector('.doc-tools').classList.toggle('hidden', v!=='layout');
   if(v==='layout'){
     const layout=doc.querySelector('.doc-layout');
     ensureDocObserver(layout);
-    layout.querySelectorAll('.doc-page').forEach(pg=>{ if(!pg.dataset.built) _docObserver.observe(pg); });
+    layout.querySelectorAll('.doc-page').forEach(pg=>{ if(pg.dataset.built!=='1') _docObserver.observe(pg); });
+    // 兜底：容器 display:none→可见后，IntersectionObserver 首次回调可能延迟一帧，
+    // 主动构建当前视口内(含上下 400px)的页，避免用户看到长时间「渲染中…」。
+    requestAnimationFrame(()=>buildVisibleDocPages(layout));
+    setTimeout(()=>buildVisibleDocPages(layout), 120);
   }
+}
+function buildVisibleDocPages(layout){
+  if(!layout) return;
+  const vh=window.innerHeight||800;
+  layout.querySelectorAll('.doc-page').forEach(pg=>{
+    if(pg.dataset.built==='1') return;
+    const r=pg.getBoundingClientRect();
+    if(r.bottom>-400 && r.top<vh+400) buildPageContent(pg);
+  });
 }
 function docToggleOriginal(cb){ const l=document.querySelector('.doc-layout'); if(l) l.classList.toggle('show-original', cb.checked); }
 function docToggleBorders(cb){ const l=document.querySelector('.doc-layout'); if(l) l.classList.toggle('show-borders', cb.checked); }
@@ -318,7 +354,7 @@ function buildContinuousLayout(container, pages){
   pages.forEach((p,idx)=>{
     const W=p.width||1, H=p.height||1;
     const frame=document.createElement('div'); frame.className='doc-page';
-    frame.dataset.idx=idx; frame.dataset.built='0';
+    frame.dataset.idx=idx;
     frame.style.aspectRatio=W+' / '+H;
     frame.style.width='calc(var(--base-w) * var(--zoom,1))';
     const lab=document.createElement('div'); lab.className='doc-page-label';
@@ -410,7 +446,24 @@ function buildElementBoxes(p){
       }
       box.appendChild(lab); box.appendChild(fx);
     } else {
-      box.innerHTML=renderInlineLatex(e.content||'');
+      // 普通文字框：渲染其中的行内 $...$ 公式（如 $\triangle ABC$）
+      const txt=(e.content||'').trim();
+      // 页脚/页码检测："第1页（共14页）" / "- 3 -" / "Page 5" → nowrap 不换行
+      const isFooter=/^(?:第\s*\d+\s*页(?:[（(]\s*共\s*\d+\s*页[)）])?|-\s*\d+\s*-|Page\s*\d+|\d+\s*\/\s*\d+)$/i.test(txt);
+      if(isFooter){
+        box.classList.add('footer-box');
+        box.style.whiteSpace='nowrap';
+        box.style.fontSize='9px';
+        box.style.color='#999';
+        box.textContent=txt;
+      } else {
+        // 正文文字框：text-box 类 → 半透明白底 + z-index:3 + pre-wrap
+        box.classList.add('text-box');
+        box.style.whiteSpace='pre-wrap';
+        box.style.height='';
+        box.style.minHeight='1.2em';
+        box.innerHTML=renderInlineLatex(txt);
+      }
     }
     frag.appendChild(box); placed++;
   }
@@ -425,6 +478,71 @@ function buildContinuousCrops(container, pages){
     container.appendChild(head);
     container.appendChild(buildCropsView(p));
   });
+}
+
+// ===== 结构化视图（阅读流）：按 reading_order + block_id 渲染，治本"图文堆叠 / ABCD 错乱" =====
+// 代理层已统一补充 reading_order（视觉行排序）与 block_id（逻辑块：选项组/段落），
+// 此处不再依赖 bbox 绝对定位，而是像真实文档一样按阅读流流式排布。
+function buildContinuousStructured(container, pages){
+  const inner=document.createElement('div'); inner.className='doc-struct-inner';
+  container.appendChild(inner);
+  pages.forEach(p=>{
+    const sep=document.createElement('div'); sep.className='struct-page-sep';
+    sep.textContent='第 '+(p.page)+' 页';
+    inner.appendChild(sep);
+    // 裁剪图按 element_index 建索引，供 figure 渲染
+    const cropByIndex={};
+    (p.crops||[]).forEach(c=>{ if(typeof c.element_index==='number' && c.base64) cropByIndex[c.element_index]=c.base64; });
+    const els=(p.elements||[]).map((e,i)=>Object.assign({}, e, {_idx:i}));
+    const blocks=groupByBlock(els);
+    blocks.forEach(blk=>{
+      const wrap=document.createElement('div'); wrap.className='struct-block';
+      if(blk.isOption){
+        // 多选题选项组：用 grid 横排成组（A./B./C./D. 不再散落）
+        wrap.classList.add('option-block');
+        blk.items.forEach(e=>{
+          const opt=document.createElement('div'); opt.className='option-item';
+          opt.innerHTML=renderInlineLatex(e.content||'');
+          wrap.appendChild(opt);
+        });
+      } else {
+        blk.items.forEach(e=>{
+          if(e.type==='formula'){
+            const f=document.createElement('div'); f.className='struct-formula';
+            f.innerHTML='<span class="latex">'+(renderLatex(e.latex||e.content||''))+'</span>';
+            wrap.appendChild(f);
+          } else if(e.type==='table'){
+            const t=document.createElement('div'); t.className='struct-table';
+            t.innerHTML=e.html||e.content||'';
+            wrap.appendChild(t);
+          } else if(e.type==='figure'){
+            const crop=cropByIndex[e._idx];
+            if(crop){ const im=document.createElement('img'); im.src=crop; im.className='struct-fig'; im.alt=e.caption||'图'; wrap.appendChild(im); }
+            if(e.caption){ const c=document.createElement('div'); c.className='struct-cap'; c.textContent=e.caption; wrap.appendChild(c); }
+          } else {
+            const para=document.createElement('p'); para.className='struct-para';
+            para.innerHTML=renderInlineLatex(e.content||'');
+            wrap.appendChild(para);
+          }
+        });
+      }
+      inner.appendChild(wrap);
+    });
+  });
+}
+// 按 reading_order 排序后，连续相同 block_id 的元素归为一组（逻辑块）
+function groupByBlock(elements){
+  const sorted=[...elements].sort((a,b)=>(a.reading_order==null?0:a.reading_order)-(b.reading_order==null?0:b.reading_order));
+  const blocks=[]; let cur=null;
+  sorted.forEach(e=>{
+    const bid=(e.block_id==null?0:e.block_id);
+    if(!cur || cur.blockId!==bid){
+      cur={blockId:bid, isOption:!!e.is_option, items:[]};
+      blocks.push(cur);
+    }
+    cur.items.push(e);
+  });
+  return blocks;
 }
 
 // ===== 旧版「逐页卡片」渲染函数（switchView/toggleOriginal/toggleBorders/buildLayoutView）=====
